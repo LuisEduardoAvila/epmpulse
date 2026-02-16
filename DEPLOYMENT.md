@@ -1308,7 +1308,7 @@ Network Security Groups (NSGs) are the preferred way to secure EPMPulse in OCI. 
 
 # Set compartment OCID
 COMPARTMENT_OCID="ocid1.compartment.oc1..aaaa..."
-VCN_OCID="ocid1.vcn.oc1.eu-amsterdam-1.aaaa..."
+VCN_OCID="ocid1.vcn.oc1.eu-frankfurt-1.aaaa..."
 
 # Create NSG
 NSG_OCID=$(oci network nsg create \
@@ -1366,7 +1366,7 @@ oci compute instance launch \
 # Get VNIC OCID
 VNIC_OCID=$(oci compute vnic-attachment list \
     --compartment-id "$COMPARTMENT_OCID" \
-    --instance-id "ocid1.instance.oc1.eu-amsterdam-1.aaaa..." \
+    --instance-id "ocid1.instance.oc1.eu-frankfurt-1.aaaa..." \
     --query 'data[0]."vnic-id"' \
     --raw-output)
 
@@ -1379,11 +1379,35 @@ oci network vnic update \
 
 ### Region-Specific CIDR Rules for OCI
 
-If your EPMPulse server runs in **eu-amsterdam-1** and connects to EPM also hosted in Amsterdam, you can restrict egress rules.
+If your EPMPulse server runs in **eu-frankfurt-1** and connects to EPM also hosted in Frankfurt, you can restrict egress rules to the Frankfurt OSN CIDR ranges listed above.
 
-#### Amsterdam Region (eu-amsterdam-1) IP Ranges
+### Frankfurt Region (eu-frankfurt-1) IP Ranges
 
-**OCI CIDR Ranges for Amsterdam:**
+**OCI CIDR Ranges for Frankfurt:**
+
+| CIDR | Tag | Purpose |
+|------|-----|---------|
+| `92.4.240.0/20` | OSN | Oracle Services Network |
+| `92.5.240.0/21` | OSN | Oracle Services Network |
+| `92.5.248.0/22` | OSN | Oracle Services Network |
+| `130.61.0.128/25` | OSN | Oracle Services Network |
+| `130.61.2.128/25` | OSN | Oracle Services Network |
+| `130.61.4.128/25` | OSN | Oracle Services Network |
+| `134.70.40.0/21` | OSN, OBJECT_STORAGE | Oracle Services Network |
+| `134.70.48.0/22` | OSN, OBJECT_STORAGE | Oracle Services Network |
+| `138.1.0.0/22` | OSN | Oracle Services Network |
+| `138.1.40.0/21` | OSN | Oracle Services Network |
+| `138.1.64.0/22` | OSN | Oracle Services Network |
+| `138.1.108.0/25` | OSN | Oracle Services Network |
+| `140.91.16.0/22` | OSN | Oracle Services Network |
+| `140.91.20.0/23` | OSN | Oracle Services Network |
+| `147.154.128.0/19` | OSN | Oracle Services Network |
+| `147.154.160.0/20` | OSN | Oracle Services Network |
+| `147.154.176.0/21` | OSN | Oracle Services Network |
+| `147.154.184.0/22` | OSN | Oracle Services Network |
+| `147.154.189.128/25` | OSN | Oracle Services Network |
+
+**OCI CIDR Ranges for Amsterdam (eu-amsterdam-1):**
 
 | CIDR | Tag | Purpose |
 |------|-----|---------|
@@ -1409,19 +1433,29 @@ If your EPMPulse server runs in **eu-amsterdam-1** and connects to EPM also host
 #!/bin/bash
 # Add Amsterdam region egress rules
 
-NSG_OCID="ocid1.networksecuritygroup.oc1.eu-amsterdam-1.xxxx"
+NSG_OCID="ocid1.networksecuritygroup.oc1.eu-frankfurt-1.xxxx"
 
-# OSN ranges (for EPM Cloud access)
+# OSN ranges (for EPM Cloud access in Frankfurt)
 OSN_CIDRS=(
-    "134.70.112.0/22"
-    "140.91.52.0/23"
-    "140.204.28.128/25"
-    "192.29.48.0/22"
-    "192.29.52.0/21"
-    "192.29.128.0/23"
-    "192.29.130.0/24"
-    "192.29.156.0/23"
-    "192.29.158.0/22"
+    "92.4.240.0/20"
+    "92.5.240.0/21"
+    "92.5.248.0/22"
+    "130.61.0.128/25"
+    "130.61.2.128/25"
+    "130.61.4.128/25"
+    "134.70.40.0/21"
+    "134.70.48.0/22"
+    "138.1.0.0/22"
+    "138.1.40.0/21"
+    "138.1.64.0/22"
+    "138.1.108.0/25"
+    "140.91.16.0/22"
+    "140.91.20.0/23"
+    "147.154.128.0/19"
+    "147.154.160.0/20"
+    "147.154.176.0/21"
+    "147.154.184.0/22"
+    "147.154.189.128/25"
 )
 
 # Add rules for each OSN CIDR
@@ -1436,7 +1470,7 @@ for cidr in "${OSN_CIDRS[@]}"; do
     echo "Added rule for $cidr"
 done
 
-echo "Amsterdam region rules configured!"
+echo "Frankfurt region rules configured!"
 ```
 
 ### Alternative: OCI Security Lists
@@ -1479,14 +1513,14 @@ Security Lists are the traditional firewall rules at the subnet level. Use NSGs 
 
 ```bash
 oci compute instance launch \
-    --availability-domain "eu-amsterdam-1-AD-1" \
+    --availability-domain "eu-frankfurt-1-AD-1" \
     --compartment-id "$COMPARTMENT_OCID" \
-    --image-id "ocid1.image.oc1.eu-amsterdam-1.aaaa..." \
+    --image-id "ocid1.image.oc1.eu-frankfurt-1.aaaa..." \
     --shape "VM.Standard.E4.Flex" \
     --shape-config '{"ocpus":4,"memoryInGBs":16}' \
-    --subnet-id "ocid1.subnet.oc1.eu-amsterdam-1.aaaa..." \
+    --subnet-id "ocid1.subnet.oc1.eu-frankfurt-1.aaaa..." \
     --assign-public-ip true \
-    --nsg-ids '["ocid1.networksecuritygroup.oc1.eu-amsterdam-1.xxxx"]' \
+    --nsg-ids '["ocid1.networksecuritygroup.oc1.eu-frankfurt-1.xxxx"]' \
     --display-name "epmpulse-prod" \
     --wait-for-state RUNNING
 ```
@@ -1498,7 +1532,7 @@ Enable encryption for data protection:
 ```bash
 oci compute boot-volume create \
     --compartment-id "$COMPARTMENT_OCID" \
-    --availability-domain "eu-amsterdam-1-AD-1" \
+    --availability-domain "eu-frankfurt-1-AD-1" \
     --source-boot-volume-id "$SOURCE_BOOT_VOLUME_OCID" \
     --encryption-in-transit-type "FULL_ENCRYPTION" \
     --kms-key-id "$VAULT_KEY_OCID"
@@ -1516,7 +1550,7 @@ oci compute boot-volume create \
 ```bash
 # Check instance public IP
 oci compute instance list-vnics \
-    --instance-id "ocid1.instance.oc1.eu-amsterdam-1.xxxx" \
+    --instance-id "ocid1.instance.oc1.eu-frankfurt-1.xxxx" \
     --query 'data[0]."public-ip"'
 
 # Check NSG rules
@@ -1534,7 +1568,7 @@ oci network nsg rules list \
 **Issue: EPMPulse cannot reach Oracle EPM**
 
 1. Verify egress rules include OSN CIDR ranges
-2. Check if EPM instance is in same region (eu-amsterdam-1)
+2. Check if EPM instance is in same region (eu-frankfurt-1)
 3. Test connectivity:
 
 ```bash
