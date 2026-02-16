@@ -1813,7 +1813,149 @@ paths:
 
 ---
 
-## 9. Summary
+## 9. EPM OAuth Integration
+
+### 9.1 Architecture
+
+EPMPulse supports **multi-server EPM environments** with **single OAuth authentication**:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Oracle Identity Cloud Service (IDCS)                  │
+│  OAuth 2.0 Token Endpoint                               │
+│  ┌─────────────────────────────────────────────────┐     │
+│  │  Token URL: /oauth2/v1/token                    │     │
+│  │  Grant Type: client_credentials                 │     │
+│  │  Scope: urn:opc:epm                             │     │
+│  └────────┬────────────────────────────────────────┘     │
+└───────────┼───────────────────────────────────────────────┘
+            │ Bearer Token
+            │ (cached until expiry)
+            ▼
+┌─────────────────────────────────────────────────────────┐
+│  EPMPulse EPM Client                                    │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐                │
+│  │Planning │  │  FCCS   │  │  ARCS   │  EPM Servers    │
+│  │  Pod    │  │  Pod    │  │  Pod    │                │
+│  └────┬────┘  └────┬────┘  └────┬────┘                │
+└───────┼────────────┼────────────┼──────────────────────┘
+        │            │            │
+        └────────────┴────────────┘
+                     │
+                     ▼
+              ┌─────────────┐
+              │ EPMPulse    │
+              │ Dashboard   │
+              └─────────────┘
+```
+
+### 9.2 Configuration
+
+**`config/apps.json`:**
+```json
+{
+  "epm": {
+    "auth": {
+      "type": "oauth",
+      "token_url": "${EPM_TOKEN_URL}",
+      "client_id": "${EPM_CLIENT_ID}",
+      "client_secret": "${EPM_CLIENT_SECRET}",
+      "scope": "urn:opc:epm"
+    },
+    "servers": {
+      "planning": {
+        "name": "Planning",
+        "base_url": "https://planning-epm.fa.us2.oraclecloud.com"
+      },
+      "fccs": {
+        "name": "FCCS",
+        "base_url": "https://fccs-epm.fa.us2.oraclecloud.com"
+      },
+      "arcs": {
+        "name": "ARCS",
+        "base_url": "https://arcs-epm.fa.us2.oraclecloud.com"
+      }
+    }
+  },
+  "apps": {
+    "Planning": {
+      "display_name": "Planning",
+      "domains": ["Actual", "Budget", "Forecast"],
+      "server": "planning",
+      "channels": ["C0123456789"]
+    },
+    "FCCS": {
+      "display_name": "FCCS",
+      "domains": ["Consolidation"],
+      "server": "fccs",
+      "channels": ["C0123456789"]
+    },
+    "ARCS": {
+      "display_name": "ARCS",
+      "domains": ["Reconciliation"],
+      "server": "arcs",
+      "channels": ["C9876543210"]
+    }
+  }
+}
+```
+
+### 9.3 Environment Variables
+
+```bash
+# OAuth Credentials
+EPM_TOKEN_URL=https://idcs-xxx.identity.oraclecloud.com/oauth2/v1/token
+EPM_CLIENT_ID=epm_client_id
+EPM_CLIENT_SECRET=epm_client_secret
+```
+
+### 9.4 Multi-Pod Job Tracking
+
+When a **Full Load** spans multiple servers:
+
+```json
+{
+  "active_jobs": {
+    "FULL_20260216_001": {
+      "job_name": "Full_Load_Multi_Pod",
+      "affected_servers": {
+        "planning": {
+          "job_id": "22334",
+          "apps": ["Planning"],
+          "status": "completed"
+        },
+        "fccs": {
+          "job_id": "55667",
+          "apps": ["FCCS"],
+          "status": "completed"
+        }
+      }
+    }
+  }
+}
+```
+
+### 9.5 Pull Mode with OAuth
+
+```python
+from src.epm.client import EPMOAuthClient
+
+# Initialize once
+epm = EPMOAuthClient.from_config()
+
+# Poll single server
+status = epm.get_job_status("planning", "22334")
+
+# Poll multiple servers (cross-pod job)
+results = epm.poll_multi_server_job({
+    "planning": "22334",
+    "fccs": "55667"
+}, timeout_minutes=60)
+```
+
+---
+
+## 10. Summary
 
 EPMPulse is designed with **simplicity first**:
 
@@ -1831,9 +1973,9 @@ EPMPulse is designed with **simplicity first**:
 
 ---
 
-## 10. API References
+## 11. API References
 
-### 10.1 Oracle EPM Cloud REST API
+### 11.1 Oracle EPM Cloud REST API
 
 **Job Monitoring:**
 ```
@@ -1883,7 +2025,7 @@ GET <epm-server>/epm/rest/v1/jobRuns/<job-id>
 
 ---
 
-### 10.2 Slack Canvas API
+### 11.2 Slack Canvas API
 
 **Canvas Update Functions:**
 

@@ -1,18 +1,45 @@
 {
+  "epm": {
+    "auth": {
+      "type": "oauth",
+      "token_url": "${EPM_TOKEN_URL}",
+      "client_id": "${EPM_CLIENT_ID}",
+      "client_secret": "${EPM_CLIENT_SECRET}",
+      "scope": "urn:opc:epm"
+    },
+    "servers": {
+      "planning": {
+        "name": "Planning",
+        "base_url": "https://planning-epm.fa.us2.oraclecloud.com"
+      },
+      "fccs": {
+        "name": "FCCS",
+        "base_url": "https://fccs-epm.fa.us2.oraclecloud.com"
+      },
+      "arcs": {
+        "name": "ARCS",
+        "base_url": "https://arcs-epm.fa.us2.oraclecloud.com"
+      }
+    }
+  },
   "apps": {
     "Planning": {
       "display_name": "Planning",
       "domains": ["Actual", "Budget", "Forecast"],
-      "channels": ["C0123456789"]
+      "server": "planning",
+      "channels": ["C0123456789"],
+      "job_types": ["import_data", "export_data", "calculation"]
     },
     "FCCS": {
       "display_name": "FCCS",
       "domains": ["Consolidation"],
+      "server": "fccs",
       "channels": ["C0123456789"]
     },
     "ARCS": {
       "display_name": "ARCS",
       "domains": ["Reconciliation"],
+      "server": "arcs",
       "channels": ["C9876543210"]
     }
   },
@@ -33,6 +60,11 @@
     "log_level": "INFO",
     "debounce_interval": 2,
     "max_retries": 3,
-    "backoff_seconds": [1, 2, 4]
+    "backoff_seconds": [1, 2, 4],
+    "pull_mode": {
+      "enabled": true,
+      "poll_interval_seconds": 30,
+      "max_poll_duration_minutes": 60
+    }
   }
 }
