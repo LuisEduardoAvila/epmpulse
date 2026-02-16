@@ -798,40 +798,224 @@ curl -s https://slack.com/api/conversations.list \
 3. Link format: `https://yourworkspace.slack.com/docs/F0123456789`
 4. Canvas ID is the part after `/docs/` (e.g., `F0123456789`)
 
-### 7.3 Getting EPM OAuth Credentials
+### 7.3 Setting Up Oracle EPM OAuth (Detailed Steps)
 
-1. **Login to Oracle Cloud Console**
-   - Navigate to Identity & Security → Identity → Applications
+**Prerequisites:**
+- Access to Oracle Cloud Infrastructure (OCI) Console
+- Domain Administrator or Application Administrator role
+- Target EPM Cloud environment provisioned
 
-2. **Create Confidential Application**
-   - Name: `EPMPulse Integration`
-   - Type: `Confidential Application`
+**Step 1: Access Identity Cloud Service**
 
-3. **Configure OAuth**
-   - Grant type: `Client Credentials`
-   - Scope: Add `urn:opc:epm`
+1. Login to [Oracle Cloud Console](https://cloud.oracle.com)
+2. Navigate to **Identity & Security** → **Identity** → **Domains**
+3. Select your identity domain (e.g., `epm-domain`)
+4. Click **Integrated applications** on the left menu
 
-4. **Save credentials:**
-   - Client ID (displayed after creation)
-   - Client Secret (shown once - save immediately)
+**Step 2: Create Confidential Application**
 
-5. **Get Token URL:**
-   - Navigate to Identity → Domain
-   - Find Token Endpoint (format: `https://idcs-xxx.identity.oraclecloud.com/oauth2/v1/token`)
+1. Click **Add application**
+2. Select **Confidential Application**
+3. Click **Launch workflow**
 
-### 7.4 Creating Slack App
+**Step 3: Configure Application Details**
 
-1. Go to https://api.slack.com/apps
-2. Click "Create New App" → "From scratch"
-3. Name it `EPMPulse`
-4. Navigate to **OAuth & Permissions**
-5. Add scopes:
+1. **Name**: Enter `EPMPulse Integration`
+2. **Description**: `EPMPulse dashboard integration for EPM Cloud REST APIs`
+3. **Application icon**: Optional - upload an icon
+4. Click **Next**
+
+**Step 4: Configure Client Credentials**
+
+1. In the **Client** section:
+   - **Allowed Grant Types**: Select **Client Credentials**
+   - Ensure **Client Secret** is enabled (default)
+
+**Step 5: Configure Token Settings**
+
+1. Navigate to **Configuration** tab
+2. Under **Resources**:
+   - Check **Is Refresh Token Allowed**
+   - Set **Access Token Expiration**: `3600` (1 hour)
+   - Set **Refresh Token Expiration**: `604800` (7 days)
+3. Click **Save**
+
+**Step 6: Authorize API Access**
+
+1. In your application, navigate to **Oracle Cloud Services**
+2. Click **Add** to select the EPM Cloud service
+3. Select the scope: `urn:opc:epm`
+4. Click **Save**
+
+**Step 7: Get OAuth Endpoint URL**
+
+1. In the Identity Domain, navigate to **Endpoints**
+2. Find the **Token Endpoint**
+3. Copy the URL (format: `https://idcs-xxx.identity.oraclecloud.com/oauth2/v1/token`)
+
+**Step 8: Save Credentials**
+
+1. Return to your application **Configuration** tab
+2. Under **Details** section:
+   - Copy **Client ID** (long alphanumeric string)
+   - Click **Show** next to **Client Secret** to reveal it
+   - Copy **Client Secret** (shown only once - save securely!)
+
+**Step 9: Activate Application**
+
+1. Click **Activate**
+2. Confirm in the dialog
+3. Status should show **Active**
+
+**Step 10: Configure EPMPulse**
+
+Add these credentials to your `/opt/epmpulse/.env` file:
+
+```bash
+EPM_TOKEN_URL=https://idcs-xxx.identity.oraclecloud.com/oauth2/v1/token
+EPM_CLIENT_ID=your_client_id_here
+EPM_CLIENT_SECRET=your_client_secret_here
+```
+
+**Step 11: Test OAuth Connection**
+
+```bash
+# Test token retrieval
+curl -X POST -u "CLIENT_ID:CLIENT_SECRET" \
+  -d "grant_type=client_credentials&scope=urn:opc:epm" \
+  "https://idcs-xxx.identity.oraclecloud.com/oauth2/v1/token"
+```
+
+Expected response:
+```json
+{
+  "access_token": "eyJ4NXQ...",
+  "token_type": "Bearer",
+  "expires_in": 3600
+}
+```
+
+---
+
+### 7.4 Creating Slack App (Detailed Steps)
+
+**Prerequisites:**
+- Slack workspace admin/owner access
+- Canvas feature enabled (Business+ or Enterprise Grid)
+
+**Step 1: Create a New Slack App**
+
+1. Go to [Slack API](https://api.slack.com/apps)
+2. Click **Create New App** button
+3. Select **From scratch**
+4. Fill in app details:
+   - **App Name**: `EPMPulse`
+   - **Development Slack Workspace**: Select your workspace from dropdown
+   - Click **Create App**
+
+**Step 2: Configure Basic Information**
+
+1. On the **Basic Information** page:
+   - **Description**: `EPM Job Status Dashboard for Slack Canvas`
+   - **Background Color**: Choose a color (e.g., `#36C5F0`)
+   - (Optional) Upload an app icon
+
+**Step 3: Add OAuth Scopes**
+
+1. Navigate to **OAuth & Permissions** (left sidebar)
+2. Scroll to **Scopes** section
+3. Under **Bot Token Scopes**, click **Add an OAuth Scope**
+4. Add the following scopes one by one:
+
+| Scope | Purpose |
+|-------|---------|
+| `canvas:write` | Create and update Canvas documents |
+| `canvas:read` | Read Canvas content |
+| `chat:write` | Post messages to channels |
+| `channels:read` | Read channel information |
+| `channels:join` | Join channels automatically |
+
+5. The complete list should look like:
    - `canvas:write`
    - `canvas:read`
    - `chat:write`
    - `channels:read`
-6. Install to workspace
-7. Copy **Bot User OAuth Token** (starts with `xoxb-`)
+   - `channels:join`
+
+**Step 4: Enable Socket Mode (Optional)**
+
+If using real-time features:
+
+1. Go to **Socket Mode** in left sidebar
+2. Toggle **Enable Socket Mode**
+3. Enter an app token name: `EPMPulse-socket`
+4. Copy the generated app-level token (starts with `xapp-`)
+5. This token is NOT needed for EPMPulse unless using WebSockets
+
+**Step 5: Install App to Workspace**
+
+1. Return to **OAuth & Permissions** page
+2. Click **Install to Workspace** button
+3. Review the permissions being requested
+4. Click **Allow** to authorize
+5. You'll be redirected back to the OAuth page
+
+**Step 6: Copy Bot Token**
+
+1. Under **OAuth Tokens** section:
+2. Find **Bot User OAuth Token**
+3. Click **Copy** (token starts with `xoxb-`)
+4. This is your `SLACK_BOT_TOKEN` value
+
+**Important:** Keep this token secure! Don't share or commit to version control.
+
+**Step 7: Add App to Channel**
+
+1. Open your target Slack channel (e.g., `#epm-status`)
+2. Type `/invite @EPMPulse` and press Enter
+3. The bot should join the channel
+4. You can verify by seeing the bot in the channel members list
+
+**Step 8: Create Canvas (Optional - if canvas doesn't exist)**
+
+1. In Slack, click **Canvases** in the left sidebar
+2. Click **New Canvas** button
+3. Name it `EPM Status Dashboard`
+4. Click **Create**
+5. Click the three dots (⋯) menu → **Copy link**
+6. Extract the Canvas ID from the URL (format: `F0123456789`)
+
+**Step 9: Configure EPMPulse**
+
+Add these to your `/opt/epmpulse/.env`:
+
+```bash
+SLACK_BOT_TOKEN=xoxb-your-bot-token-here
+SLACK_MAIN_CHANNEL_ID=C0123456789  # Your channel ID
+SLACK_MAIN_CANVAS_ID=F0123456789    # Your canvas ID
+```
+
+**Step 10: Verify Setup**
+
+Test the Slack connection:
+
+```bash
+# Test auth
+curl -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+  https://slack.com/api/auth.test
+
+# Expected: {"ok": true, ...}
+
+# List channels
+curl -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+  https://slack.com/api/conversations.list | jq '.channels[] | {name: .name, id: .id}'
+
+# Test Canvas access
+curl -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"canvas_id": "F0123456789"}' \
+  https://slack.com/api/canvases.access
+```
 
 ---
 
