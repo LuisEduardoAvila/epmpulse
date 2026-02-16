@@ -1263,6 +1263,296 @@ sudo certbot renew --force-renewal
 
 ---
 
+## Appendix B: OCI-Specific Firewall Configuration
+
+When deploying EPMPulse on Oracle Cloud Infrastructure (OCI), you can use OCI's native security controls instead of host-based firewalls.
+
+### OCI Network Security Groups (Recommended)
+
+Network Security Groups (NSGs) are the preferred way to secure EPMPulse in OCI. They act as virtual firewalls attached to VNICs (network interfaces).
+
+#### Create NSG for EPMPulse
+
+**Using OCI Console:**
+
+1. Navigate to **Networking** → **Virtual Cloud Networks** → Your VCN
+2. Click **Network Security Groups** → **Create NSG**
+3. Name: `epmpulse-servers`
+4. Add the following security rules:
+
+**Ingress Rules (Inbound):**
+
+| Source Type | Source | IP Protocol | Port | Description |
+|-------------|--------|-------------|------|-------------|
+| CIDR | 0.0.0.0/0 | TCP | 80 | HTTP (redirects to HTTPS) |
+| CIDR | 0.0.0.0/0 | TCP | 443 | HTTPS API |
+| CIDR | 10.0.0.0/16 | TCP | 22 | SSH (from VCN only) |
+
+**Note:** Replace `10.0.0.0/16` with your VCN CIDR block.
+
+**Egress Rules (Outbound):**
+
+| Destination Type | Destination | IP Protocol | Port | Description |
+|-----------------|-------------|-------------|------|-------------|
+| CIDR | 0.0.0.0/0 | TCP | 443 | HTTPS (for Slack, OCI, etc.) |
+| CIDR | 0.0.0.0/0 | TCP | 53 | DNS (UDP also) |
+| CIDR | 0.0.0.0/0 | UDP | 53 | DNS |
+
+**Note:** If your organization requires strict firewall rules, use the region-specific CIDR ranges below instead of `0.0.0.0/0`.
+
+#### Using OCI CLI
+
+```bash
+#!/bin/bash
+# Create NSG via OCI CLI
+
+# Set compartment OCID
+COMPARTMENT_OCID="ocid1.compartment.oc1..aaaa..."
+VCN_OCID="ocid1.vcn.oc1.eu-amsterdam-1.aaaa..."
+
+# Create NSG
+NSG_OCID=$(oci network nsg create \
+    --compartment-id "$COMPARTMENT_OCID" \
+    --vcn-id "$VCN_OCID" \
+    --display-name "epmpulse-servers" \
+    --wait-for-state AVAILABLE \
+    --query 'data.id' \
+    --raw-output)
+
+echo "Created NSG: $NSG_OCID"
+
+# Add ingress rule: HTTPS (443)
+oci network nsg rules add \
+    --nsg-id "$NSG_OCID" \
+    --direction INGRESS \
+    --protocol 6 \
+    --source-type CIDR_BLOCK \
+    --source "0.0.0.0/0" \
+    --tcp-options "destination-port-range={min=443,max=443}"
+
+# Add ingress rule: HTTP (80)
+oci network nsg rules add \
+    --nsg-id "$NSG_OCID" \
+    --direction INGRESS \
+    --protocol 6 \
+    --source-type CIDR_BLOCK \
+    --source "0.0.0.0/0" \
+    --tcp-options "destination-port-range={min=80,max=80}"
+
+# Add ingress rule: SSH (22) - restrict to VCN only
+oci network nsg rules add \
+    --nsg-id "$NSG_OCID" \
+    --direction INGRESS \
+    --protocol 6 \
+    --source-type CIDR_BLOCK \
+    --source "10.0.0.0/16" \
+    --tcp-options "destination-port-range={min=22,max=22}"
+
+echo "NSG configured successfully!"
+```
+
+#### Apply NSG to Instance
+
+**During instance creation (CLI):**
+```bash
+oci compute instance launch \
+    --compartment-id "$COMPARTMENT_OCID" \
+    --nsg-ids '["'$NSG_OCID'"]' \
+    # ... other parameters
+```
+
+**Add to existing instance:**
+```bash
+# Get VNIC OCID
+VNIC_OCID=$(oci compute vnic-attachment list \
+    --compartment-id "$COMPARTMENT_OCID" \
+    --instance-id "ocid1.instance.oc1.eu-amsterdam-1.aaaa..." \
+    --query 'data[0]."vnic-id"' \
+    --raw-output)
+
+# Update VNIC to attach NSG
+oci network vnic update \
+    --vnic-id "$VNIC_OCID" \
+    --nsg-ids '["'$NSG_OCID'"]' \
+    --force
+```
+
+### Region-Specific CIDR Rules for OCI
+
+If your EPMPulse server runs in **eu-amsterdam-1** and connects to EPM also hosted in Amsterdam, you can restrict egress rules.
+
+#### Amsterdam Region (eu-amsterdam-1) IP Ranges
+
+**OCI CIDR Ranges for Amsterdam:**
+
+| CIDR | Tag | Purpose |
+|------|-----|---------|
+| `141.144.160.0/20` | OCI | VCN addresses |
+| `141.144.176.0/21` | OCI | VCN addresses |
+| `141.147.16.0/20` | OCI | VCN addresses |
+| `141.147.32.0/21` | OCI | VCN addresses |
+| `132.145.0.0/20` | OCI | VCN addresses |
+| `132.145.16.0/21` | OCI | VCN addresses |
+| `134.70.112.0/22` | OSN | Oracle Services Network |
+| `140.91.52.0/23` | OSN | Oracle Services Network |
+| `140.204.28.128/25` | OSN | Oracle Services Network |
+| `192.29.48.0/22` | OSN | Oracle Services Network |
+| `192.29.52.0/21` | OSN | Oracle Services Network |
+| `192.29.128.0/23` | OSN | Oracle Services Network |
+| `192.29.130.0/24` | OSN | Oracle Services Network |
+| `192.29.156.0/23` | OSN | Oracle Services Network |
+| `192.29.158.0/22` | OSN | Oracle Services Network, Object Storage |
+
+**Update script for OCI CLI:**
+
+```bash
+#!/bin/bash
+# Add Amsterdam region egress rules
+
+NSG_OCID="ocid1.networksecuritygroup.oc1.eu-amsterdam-1.xxxx"
+
+# OSN ranges (for EPM Cloud access)
+OSN_CIDRS=(
+    "134.70.112.0/22"
+    "140.91.52.0/23"
+    "140.204.28.128/25"
+    "192.29.48.0/22"
+    "192.29.52.0/21"
+    "192.29.128.0/23"
+    "192.29.130.0/24"
+    "192.29.156.0/23"
+    "192.29.158.0/22"
+)
+
+# Add rules for each OSN CIDR
+for cidr in "${OSN_CIDRS[@]}"; do
+    oci network nsg rules add \
+        --nsg-id "$NSG_OCID" \
+        --direction EGRESS \
+        --protocol 6 \
+        --destination-type CIDR_BLOCK \
+        --destination "$cidr" \
+        --tcp-options "destination-port-range={min=443,max=443}"
+    echo "Added rule for $cidr"
+done
+
+echo "Amsterdam region rules configured!"
+```
+
+### Alternative: OCI Security Lists
+
+Security Lists are the traditional firewall rules at the subnet level. Use NSGs instead if possible, but if you need Security Lists:
+
+**Using OCI Console:**
+
+1. Navigate to **Networking** → **Virtual Cloud Networks** → Your VCN
+2. Click **Security Lists**
+3. Select the subnet's security list or create new
+4. Add the following rules:
+
+**Ingress Rules:**
+
+| Source Type | Source CIDR | IP Protocol | Port Range | Action |
+|-------------|-------------|-------------|------------|--------|
+| CIDR | 0.0.0.0/0 | TCP | 443 | Allow |
+| CIDR | 0.0.0.0/0 | TCP | 80 | Allow |
+| CIDR | 10.0.0.0/16 | TCP | 22 | Allow |
+
+**Egress Rules:**
+
+| Destination Type | Destination CIDR | IP Protocol | Port Range | Action |
+|-----------------|-------------------|-------------|------------|--------|
+| CIDR | 0.0.0.0/0 | TCP | 443 | Allow |
+| CIDR | 0.0.0.0/0 | UDP | 53 | Allow |
+
+### OCI Instance Configurations
+
+#### Shape Recommendations
+
+| Usage | Shape | OCPUs | Memory | Disk |
+|-------|-------|-------|--------|------|
+| Small (testing) | VM.Standard.E4.Flex | 2 | 8 GB | 50 GB |
+| Medium (production) | VM.Standard.E4.Flex | 4 | 16 GB | 100 GB |
+| Large (high traffic) | VM.Standard.E4.Flex | 8 | 32 GB | 200 GB |
+
+**OCI CLI to create instance:**
+
+```bash
+oci compute instance launch \
+    --availability-domain "eu-amsterdam-1-AD-1" \
+    --compartment-id "$COMPARTMENT_OCID" \
+    --image-id "ocid1.image.oc1.eu-amsterdam-1.aaaa..." \
+    --shape "VM.Standard.E4.Flex" \
+    --shape-config '{"ocpus":4,"memoryInGBs":16}' \
+    --subnet-id "ocid1.subnet.oc1.eu-amsterdam-1.aaaa..." \
+    --assign-public-ip true \
+    --nsg-ids '["ocid1.networksecuritygroup.oc1.eu-amsterdam-1.xxxx"]' \
+    --display-name "epmpulse-prod" \
+    --wait-for-state RUNNING
+```
+
+#### Boot Volume Encryption
+
+Enable encryption for data protection:
+
+```bash
+oci compute boot-volume create \
+    --compartment-id "$COMPARTMENT_OCID" \
+    --availability-domain "eu-amsterdam-1-AD-1" \
+    --source-boot-volume-id "$SOURCE_BOOT_VOLUME_OCID" \
+    --encryption-in-transit-type "FULL_ENCRYPTION" \
+    --kms-key-id "$VAULT_KEY_OCID"
+```
+
+### OCI-Specific Troubleshooting
+
+**Issue: Cannot access EPMPulse from internet**
+
+1. Check NSG rules allow port 443
+2. Verify subnet has public IP assigned
+3. Check Internet Gateway (IGW) is attached to VCN
+4. Verify route table has route to IGW
+
+```bash
+# Check instance public IP
+oci compute instance list-vnics \
+    --instance-id "ocid1.instance.oc1.eu-amsterdam-1.xxxx" \
+    --query 'data[0]."public-ip"'
+
+# Check NSG rules
+oci network nsg rules list \
+    --nsg-id "$NSG_OCID" \
+    --query 'data[].{"direction":direction,"protocol":protocol,"source":source,"destination":destination}'
+```
+
+**Issue: EPMPulse cannot reach Slack**
+
+1. NSG egress rules must allow HTTPS (443)
+2. Check if using strict CIDR rules - Slack requires `0.0.0.0/0` for HTTPS
+3. Verify Internet Gateway is attached
+
+**Issue: EPMPulse cannot reach Oracle EPM**
+
+1. Verify egress rules include OSN CIDR ranges
+2. Check if EPM instance is in same region (eu-amsterdam-1)
+3. Test connectivity:
+
+```bash
+# From EPMPulse server
+curl -v https://idcs-xxx.identity.oraclecloud.com
+```
+
+### Best Practices for OCI
+
+1. **Use NSGs over Security Lists** - NSGs provide better granularity and can be attached to specific instances
+2. **Enable Cloud Guard** - For security monitoring and threat detection
+3. **Use Vault for secrets** - Store `EPMPULSE_API_KEY` and tokens in OCI Vault, not in instance metadata
+4. **Enable VCN Flow Logs** - For network troubleshooting and security auditing
+5. **Use Service Gateway** - For private access to OCI services without internet
+6. **Enable OS Management** - For automated security patching
+
+---
+
 ## 12. Security Hardening
 
 ### 12.1 File Permissions
