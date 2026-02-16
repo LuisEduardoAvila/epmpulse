@@ -1,0 +1,38 @@
+{
+  "apps": {
+    "Planning": {
+      "display_name": "Planning",
+      "domains": ["Actual", "Budget", "Forecast"],
+      "channels": ["C0123456789"]
+    },
+    "FCCS": {
+      "display_name": "FCCS",
+      "domains": ["Consolidation"],
+      "channels": ["C0123456789"]
+    },
+    "ARCS": {
+      "display_name": "ARCS",
+      "domains": ["Reconciliation"],
+      "channels": ["C9876543210"]
+    }
+  },
+  "channels": {
+    "C0123456789": {
+      "name": "epm-main",
+      "canvas_id": "Fcanvas_main_placeholder"
+    },
+    "C9876543210": {
+      "name": "arcs-support",
+      "canvas_id": "Fcanvas_arcs_placeholder"
+    }
+  },
+  "settings": {
+    "api_key_env": "EPMPULSE_API_KEY",
+    "slack_token_env": "SLACK_BOT_TOKEN",
+    "canvas_id_env": "SLACK_CANVAS_ID",
+    "log_level": "INFO",
+    "debounce_interval": 2,
+    "max_retries": 3,
+    "backoff_seconds": [1, 2, 4]
+  }
+}

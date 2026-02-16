@@ -1,0 +1,7 @@
+# EPMPulse Data Directory
+# This directory stores:
+# - apps_status.json: Current state
+# - apps_status.lock: File lock
+# - backups/: Hourly state backups
+
+# This file ensures the directory is tracked by git

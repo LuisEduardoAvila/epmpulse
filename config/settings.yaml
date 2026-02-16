@@ -1,0 +1,21 @@
+# EPMPulse Runtime Settings
+# Environment variables override these values
+
+api:
+  host: "0.0.0.0"
+  port: 18800
+  debug: false
+
+slack:
+  min_update_interval_sec: 2
+  max_retries: 3
+  retry_backoff_sec: [1, 2, 4]
+
+state:
+  stale_loading_timeout_hours: 2
+  backup_interval_hours: 1
+  max_backups: 24
+
+logging:
+  level: "INFO"
+  format: "json"

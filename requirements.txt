@@ -1,0 +1,28 @@
+# EPMPulse Dependencies
+# Python 3.11+ recommended
+
+# Web Framework
+flask>=3.0.0
+flask-limiter>=3.5.0
+werkzeug>=3.0.0
+
+# Request Validation
+pydantic>=2.0.0
+
+# Slack Integration
+slack-sdk>=3.21.0
+
+# HTTP Client (for future EPM integration)
+requests>=2.31.0
+
+# Configuration
+python-dotenv>=1.0.0
+pyyaml>=6.0.0
+
+# Production Server
+gunicorn>=21.0.0
+
+# Development/Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.12.0
