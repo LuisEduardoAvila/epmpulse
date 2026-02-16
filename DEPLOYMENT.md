@@ -1,6 +1,6 @@
-# EPMPulse Deployment Guide
+# EPMPulse Production Deployment Guide
 
-Production deployment documentation for EPMPulse EPM Job Status Dashboard.
+Complete guide for deploying EPMPulse in a production environment.
 
 ---
 
@@ -11,7 +11,7 @@ Production deployment documentation for EPMPulse EPM Job Status Dashboard.
 3. [Installation Steps](#3-installation-steps)
 4. [Systemd Service Configuration](#4-systemd-service-configuration)
 5. [Nginx Reverse Proxy](#5-nginx-reverse-proxy)
-6. [SSL Certificate](#6-ssl-certificate)
+6. [SSL Certificate Lets Encrypt](#6-ssl-certificate-lets-encrypt)
 7. [Configuration](#7-configuration)
 8. [Testing](#8-testing)
 9. [Backup Strategy](#9-backup-strategy)
@@ -23,141 +23,415 @@ Production deployment documentation for EPMPulse EPM Job Status Dashboard.
 
 ## 1. Prerequisites
 
-### System Requirements
+### 1.1 Python Requirements
 
-| Component | Minimum | Recommended |
-|-----------|---------|-------------|
+- **Python 3.11+** required
+- **pip** 23.0+ recommended
+- **virtualenv** or **python3-venv** package
+
+```bash
+# Check Python version
+python3 --version  # Must be 3.11 or higher
+
+# Install venv if missing
+sudo apt-get update
+sudo apt-get install -y python3-venv python3-pip
+```
+
+### 1.2 Oracle EPM Cloud Access
+
+Required credentials from Oracle Cloud Console:
+
+| Credential | Description | Where to Find |
+|------------|-------------|---------------|
+| `EPM_CLIENT_ID` | OAuth Client ID | Oracle Cloud IAM > Applications |
+| `EPM_CLIENT_SECRET` | OAuth Client Secret | Oracle Cloud IAM > Applications |
+| `EPM_TOKEN_URL` | OAuth Token Endpoint | Oracle Cloud Identity Domain |
+
+**OAuth Scope Required:** `urn:opc:epm`
+
+### 1.3 Slack Workspace Requirements
+
+- Slack workspace with **Canvas** enabled
+- Slack App with permissions:
+  - `canvas:write`
+  - `canvas:read`
+  - `chat:write`
+  - `channels:read`
+
+### 1.4 Server Requirements
+
+| Resource | Minimum | Recommended |
+|----------|---------|-------------|
 | CPU | 2 cores | 4 cores |
 | RAM | 2 GB | 4 GB |
-| Disk | 10 GB | 50 GB |
-| Python | 3.11+ | 3.11+ |
-| OS | Ubuntu 22.04 LTS | Ubuntu 22.04/24.04 LTS |
+| Disk | 10 GB | 50 GB SSD |
+| Network | 100 Mbps | 1 Gbps |
 
-### Network Requirements
+### 1.5 Network Requirements
 
-| Port | Protocol | Purpose | Direction |
-|------|----------|---------|-----------|
-| 80 | TCP | HTTP (redirect to HTTPS) | Inbound |
-| 443 | TCP | HTTPS API | Inbound |
-| 18800 | TCP | EPMPulse internal (localhost only) | Localhost |
-| 443 | TCP | Oracle EPM Cloud API | Outbound |
-| 443 | TCP | Slack API | Outbound |
+#### Ports
 
-### External Dependencies
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| 22 | TCP | SSH access |
+| 80 | TCP | HTTP (redirects to HTTPS) |
+| 443 | TCP | HTTPS API endpoint |
+| 18800 | TCP | EPMPulse internal (localhost only) |
+
+#### Firewall Rules
+
+```bash
+# UFW configuration
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow ssh
+sudo ufw allow 'Nginx Full'
+
+# Enable firewall
+sudo ufw --force enable
+```
+
+#### Outbound Access
+
+EPMPulse requires outbound HTTPS (TCP/443) to the following services:
+
+**Slack API:**
+- Hosts: `*.slack.com`, `slack.com`
+- **Important:** Slack operates on AWS and does **not** publish fixed IP ranges
+- Options for firewall rules:
+  1. **Recommended:** Allow outbound to `slack.com:443` (domain-based)
+  2. **Alternative:** Allow all outbound HTTPS (if strict firewall required)
+  3. **AWS IP Ranges:** Download AWS IP ranges and allow all (complex, changes frequently)
 
 **Oracle EPM Cloud:**
-- Active Oracle Cloud Infrastructure (OCI) tenancy
-- EPM Cloud service provisioned (Planning, FCCS, or ARCS)
-- Service account with REST API access
-- OAuth 2.0 confidential application configured
+- Hosts: `*.oraclecloud.com`, `*.oracle.com`
+- **OCI IP Ranges:** Oracle publishes IP ranges at:
+  ```
+  https://docs.oracle.com/en-us/iaas/tools/public_ip_ranges.json
+  ```
 
-**Slack:**
-- Workspace with Canvas feature enabled (paid plans)
-- Bot token with following scopes:
-  - `canvas:access`
-  - `canvas:write`
-  - `channels:read`
-  - `chat:write`
-- App installed to target channels
+##### Key OCI IP Ranges by Region
+
+| Region | CIDR Range | Tag |
+|--------|-----------|-----|
+| **US East (Ashburn)** | `129.213.0.0/20` | OCI |
+| **US West (Phoenix)** | `129.146.0.0/20` | OCI |
+| **US West (San Jose)** | `146.235.192.0/19` | OCI |
+| **UK South (London)** | `132.145.224.0/19` | OCI |
+| **EU Frankfurt** | `129.159.192.0/19` | OCI |
+| **EU Amsterdam** | `132.145.0.0/20` | OCI |
+| **Australia (Sydney)** | `129.148.160.0/20` | OCI |
+| **Brazil (São Paulo)** | `144.22.64.0/18` | OCI |
+| **Canada (Toronto)** | `140.238.128.0/19` | OCI |
+| **Japan (Tokyo)** | `132.145.224.0/20` | OCI |
+
+##### Oracle Services Network (OSN) Ranges
+
+For Oracle EPM Cloud, you need OSN ranges:
+
+| Region | CIDR Range | Services |
+|--------|-----------|----------|
+| **US East (Ashburn)** | `134.70.24.0/21` | OSN, Object Storage |
+| **US West (Phoenix)** | `134.70.8.0/21` | OSN, Object Storage |
+| **UK South (London)** | `140.91.32.0/22` | OSN |
+| **EU Frankfurt** | `134.70.32.0/22` | OSN, Object Storage |
+| **Brazil (São Paulo)** | `134.70.84.0/22` | OSN, Object Storage |
+
+##### Dynamic IP Range Script
+
+Create a script to fetch current OCI ranges:
+
+```bash
+#!/bin/bash
+# /opt/epmpulse/update-firewall.sh
+
+# Fetch OCI IP ranges
+curl -s https://docs.oracle.com/en-us/iaas/tools/public_ip_ranges.json -o /tmp/oci_ips.json
+
+# Extract OSN ranges for your region (example: us-ashburn-1)
+OSN_IPS=$(jq -r '.regions[] | select(.region=="us-ashburn-1") | .cidrs[] | select(.tags | contains(["OSN"])) | .cidr' /tmp/oci_ips.json)
+
+# Add to UFW
+for ip in $OSN_IPS; do
+    sudo ufw allow out to $ip port 443 proto tcp
+    sudo ufw allow out to $ip port 443 proto tcp
+    sudo ufw allow in from $ip to any port 443 proto tcp
+done
+
+echo "Updated firewall rules for OCI OSN ranges"
+```
+
+##### Complete UFW Configuration
+
+```bash
+#!/bin/bash
+# Complete firewall setup for EPMPulse
+
+# Reset UFW
+sudo ufw --force reset
+
+# Default policies
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+
+# Allow SSH (change port if using custom)
+sudo ufw allow 22/tcp
+
+# Allow HTTP/HTTPS (via Nginx)
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+
+# Deny direct EPMPulse access (must go through Nginx)
+sudo ufw deny 18800/tcp
+
+# Allow outbound to Slack (if domain-based not possible)
+# Note: Slack uses AWS - no fixed IPs available
+# Allow all outbound HTTPS (required for Slack)
+sudo ufw allow out 443/tcp
+
+# Allow outbound to Oracle EPM (specific IPs if known)
+# Example for us-ashburn-1 OSN ranges:
+sudo ufw allow out to 134.70.24.0/21 port 443
+sudo ufw allow out to 134.70.32.0/22 port 443
+
+# Enable firewall
+sudo ufw --force enable
+
+# Check status
+sudo ufw status verbose
+```
+
+##### iptables Alternative
+
+If using iptables directly:
+
+```bash
+# Flush existing rules
+sudo iptables -F
+sudo iptables -X
+
+# Default policies
+sudo iptables -P INPUT DROP
+sudo iptables -P FORWARD DROP
+sudo iptables -P OUTPUT ACCEPT
+
+# Allow loopback
+sudo iptables -A INPUT -i lo -j ACCEPT
+
+# Allow established connections
+sudo iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+# Allow SSH
+sudo iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+
+# Allow HTTP/HTTPS
+sudo iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+
+# Allow localhost access to EPMPulse
+sudo iptables -A INPUT -p tcp -s 127.0.0.1 --dport 18800 -j ACCEPT
+
+# Save rules
+sudo iptables-save > /etc/iptables/rules.v4
+```
+
+##### Corporate Firewall Configuration
+
+If behind a corporate firewall, request these openings:
+
+**Outbound (EPMPulse Server → Internet):**
+
+| Destination | Port | Protocol | Purpose |
+|-------------|------|----------|---------|
+| `*.slack.com` | 443 | TCP | Slack Canvas API |
+| `slack.com` | 443 | TCP | Slack OAuth |
+| `*.oraclecloud.com` | 443 | TCP | EPM Cloud API |
+| `*.identity.oraclecloud.com` | 443 | TCP | Oracle Identity (OAuth) |
+| `*.oracle.com` | 443 | TCP | Oracle documentation/updates |
+
+**Inbound (Internet → EPMPulse Server):**
+
+| Source | Port | Protocol | Purpose |
+|--------|------|----------|---------|
+| Any | 80 | TCP | HTTP redirect |
+| Any | 443 | TCP | HTTPS API |
+| Corporate VPN | 22 | TCP | SSH management |
+
+**Note on Slack IPs:** Slack runs on AWS and does not publish fixed egress IP ranges. If your corporate firewall requires IP whitelisting:
+1. Use domain-based rules if possible
+2. Monitor AWS IP ranges at https://ip-ranges.amazonaws.com/ip-ranges.json
+3. Allow all HTTPS outbound for Slack functionality
+- `letsencrypt.org:443` - Certificate validation (if using Certbot)
 
 ---
 
 ## 2. Environment Setup
 
+### 2.1 Create Environment File
+
 Create `/opt/epmpulse/.env`:
 
 ```bash
-# Application Settings
-EPMPULSE_API_KEY=your-secure-random-key-here-change-in-production
-EPMPULSE_ENV=production
-EPMPULSE_HOST=127.0.0.1
-EPMPULSE_PORT=18800
+# ============================================================================
+# EPMPULSE CORE CONFIGURATION
+# ============================================================================
+
+# API Security (generate with: openssl rand -hex 32)
+EPMPULSE_API_KEY="your_secure_64_character_api_key_here"
+
+# Environment
+EPMPULSE_ENV="production"
+EPMPULSE_DEBUG="false"
+EPMPULSE_HOST="127.0.0.1"
+EPMPULSE_PORT="18800"
 
 # Logging
-EPMPULSE_LOG_LEVEL=INFO
-EPMPULSE_LOG_FORMAT=json
+EPMPULSE_LOG_LEVEL="INFO"
+EPMPULSE_LOG_FORMAT="json"
+EPMPULSE_LOG_FILE="/var/log/epmpulse/epmpulse.log"
 
-# Slack Configuration
-SLACK_BOT_TOKEN=xoxb-your-bot-token-from-slack
-SLACK_MAIN_CHANNEL_ID=C0123456789
-SLACK_MAIN_CANVAS_ID=Fxxxxxxxxxxxxxxxx
-SLACK_ARCS_CHANNEL_ID=C9876543210
-SLACK_ARCS_CANVAS_ID=Fyyyyyyyyyyyyyyyy
+# Data Directory
+EPMPULSE_DATA_DIR="/opt/epmpulse/data"
+EPMPULSE_APPS_CONFIG="/opt/epmpulse/config/apps.json"
 
-# EPM OAuth Configuration
-EPM_TOKEN_URL=https://idcs-xxx.identity.oraclecloud.com/oauth2/v1/token
-EPM_CLIENT_ID=your-confidential-app-client-id
-EPM_CLIENT_SECRET=your-confidential-app-client-secret
+# ============================================================================
+# SLACK CONFIGURATION
+# ============================================================================
+
+# Slack Bot Token (from Slack App OAuth & Permissions)
+SLACK_BOT_TOKEN="xoxb-your-bot-token-here"
+
+# Channel IDs and Canvas IDs (see Configuration section below)
+SLACK_MAIN_CHANNEL_ID="C0123456789"
+SLACK_MAIN_CANVAS_ID="F0123456789"
+
+# Optional: Separate ARCS configuration
+SLACK_ARCS_CHANNEL_ID="C9876543210"
+SLACK_ARCS_CANVAS_ID="F9876543210"
+
+# ============================================================================
+# ORACLE EPM CONFIGURATION (Optional - for pull mode)
+# ============================================================================
+
+# OAuth credentials from Oracle IAM
+EPM_TOKEN_URL="https://idcs-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.identity.oraclecloud.com/oauth2/v1/token"
+EPM_CLIENT_ID="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+EPM_CLIENT_SECRET="xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# ============================================================================
+# RATE LIMITING (Optional overrides)
+# ============================================================================
+
+EPMPULSE_RATE_LIMIT_POST="60 per minute"
+EPMPULSE_RATE_LIMIT_GET="100 per minute"
 ```
 
-### Generate Secure API Key
+### 2.2 Environment Variable Reference
 
-```bash
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-### Environment File Permissions
-
-```bash
-chmod 600 /opt/epmpulse/.env
-chown epmpulse:epmpulse /opt/epmpulse/.env
-```
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `EPMPULSE_API_KEY` | Yes | - | API authentication key |
+| `SLACK_BOT_TOKEN` | Yes | - | Slack Bot OAuth token |
+| `SLACK_MAIN_CHANNEL_ID` | Yes | - | Primary Slack channel ID |
+| `SLACK_MAIN_CANVAS_ID` | Yes | - | Slack Canvas ID for display |
+| `SLACK_ARCS_CHANNEL_ID` | No | - | ARCS-specific channel |
+| `SLACK_ARCS_CANVAS_ID` | No | - | ARCS Canvas ID |
+| `EPMPULSE_HOST` | No | `0.0.0.0` | Bind address |
+| `EPMPULSE_PORT` | No | `18800` | Internal port |
+| `EPMPULSE_ENV` | No | `development` | Environment name |
+| `EPMPULSE_LOG_LEVEL` | No | `INFO` | Logging level |
+| `EPMPULSE_DATA_DIR` | No | `data` | Data directory path |
+| `EPM_TOKEN_URL` | No | - | Oracle OAuth endpoint |
+| `EPM_CLIENT_ID` | No | - | Oracle OAuth client ID |
+| `EPM_CLIENT_SECRET` | No | - | Oracle OAuth secret |
 
 ---
 
 ## 3. Installation Steps
 
-### Option A: Virtual Environment (Recommended)
+### 3.1 System User Setup
+
+```bash
+# Create dedicated user
+sudo useradd -r -s /bin/false -d /opt/epmpulse epmpulse
+
+# Create directories
+sudo mkdir -p /opt/epmpulse
+sudo mkdir -p /opt/epmpulse/data/backups
+sudo mkdir -p /opt/epmpulse/config
+sudo mkdir -p /var/log/epmpulse
+
+# Set permissions
+sudo chown -R epmpulse:epmpulse /opt/epmpulse
+sudo chmod 750 /opt/epmpulse
+```
+
+### 3.2 Option A: Virtual Environment Installation
 
 ```bash
 # Clone repository
 cd /opt
-git clone https://github.com/LuisEduardoAvila/epmpulse.git
-cd epmpulse
+git clone https://github.com/your-org/epm-dashboard.git epmpulse
 
 # Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
+cd /opt/epmpulse
+sudo -u epmpulse python3 -m venv venv
 
-# Install dependencies
-pip install --upgrade pip
-pip install -r requirements.txt
+# Activate and install dependencies
+sudo -u epmpulse bash -c "source venv/bin/activate && pip install -r requirements.txt"
 
-# Create data directories
-mkdir -p data/backups
-mkdir -p logs
+# Copy and update configuration
+sudo cp config/apps.json.example config/apps.json
+sudo nano config/apps.json  # Edit with your settings
 
-# Copy configuration
-cp config/apps.json.example config/apps.json
-# Edit config/apps.json with your settings
+# Set ownership
+sudo chown -R epmpulse:epmpulse /opt/epmpulse
 ```
 
-### Option B: Docker
+### 3.3 Option B: Docker Installation
 
-```bash
-# Build image
-docker build -t epmpulse:latest .
+```dockerfile
+# Dockerfile
+FROM python:3.11-slim
 
-# Run container
-docker run -d \
-  --name epmpulse \
-  --restart unless-stopped \
-  -p 127.0.0.1:18800:18800 \
-  --env-file .env \
-  -v $(pwd)/data:/app/data \
-  -v $(pwd)/config:/app/config:ro \
-  -v $(pwd)/logs:/app/logs \
-  epmpulse:latest
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
 
-# View logs
-docker logs -f epmpulse
+# Create user
+RUN useradd -r -s /bin/false -m epmpulse
+
+# Set workdir
+WORKDIR /app
+
+# Copy requirements first for layer caching
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application
+COPY --chown=epmpulse:epmpulse . .
+
+# Create data directory
+RUN mkdir -p data/backups && chown -R epmpulse:epmpulse data
+
+# Switch to non-root user
+USER epmpulse
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:18800/health')" || exit 1
+
+# Expose port
+EXPOSE 18800
+
+# Start command
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:18800", "--access-logfile", "-", "--error-logfile", "-", "src.app:create_app()"]
 ```
-
-### Option C: Docker Compose
-
-Create `docker-compose.yml`:
 
 ```yaml
+# docker-compose.yml
 version: '3.8'
 
 services:
@@ -165,102 +439,128 @@ services:
     build: .
     container_name: epmpulse
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:18800:18800"
-    env_file:
-      - .env
+    
+    environment:
+      - EPMPULSE_API_KEY=${EPMPULSE_API_KEY}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_MAIN_CHANNEL_ID=${SLACK_MAIN_CHANNEL_ID}
+      - SLACK_MAIN_CANVAS_ID=${SLACK_MAIN_CANVAS_ID}
+      - EPMPULSE_ENV=production
+      - EPMPULSE_LOG_LEVEL=INFO
+      
     volumes:
       - ./data:/app/data
-      - ./config:/app/config:ro
-      - ./logs:/app/logs
+      - ./config:/app/config
+      - ./logs:/var/log/epmpulse
+      
+    ports:
+      - "127.0.0.1:18800:18800"
+      
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:18800/api/v1/health"]
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:18800/health')"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
+      start_period: 5s
 ```
 
-Run:
 ```bash
-docker-compose up -d
+# Deploy with Docker Compose
+sudo mkdir -p /opt/epmpulse
+cd /opt/epmpulse
+
+# Copy docker-compose.yml and .env
+sudo cp /path/to/docker-compose.yml .
+sudo cp /path/to/.env .
+
+# Start service
+sudo docker-compose up -d
+
+# Check status
+sudo docker-compose ps
+sudo docker-compose logs -f
 ```
 
 ---
 
 ## 4. Systemd Service Configuration
 
+### 4.1 Create Service File
+
 Create `/etc/systemd/system/epmpulse.service`:
 
 ```ini
 [Unit]
-Description=EPMPulse EPM Dashboard
+Description=EPMPulse - EPM Job Status Dashboard
+Documentation=https://github.com/your-org/epm-dashboard
 After=network.target
+Wants=network.target
 
 [Service]
 Type=simple
 User=epmpulse
 Group=epmpulse
 WorkingDirectory=/opt/epmpulse
+
+# Load environment variables
+Environment="PATH=/opt/epmpulse/venv/bin"
 EnvironmentFile=/opt/epmpulse/.env
 
+# Start command
 ExecStart=/opt/epmpulse/venv/bin/gunicorn \
     -w 4 \
     -b 127.0.0.1:18800 \
-    --timeout 60 \
-    --keep-alive 2 \
     --access-logfile /var/log/epmpulse/access.log \
     --error-logfile /var/log/epmpulse/error.log \
-    --capture-output \
-    --enable-stdio-inheritance \
+    --log-level info \
+    --timeout 30 \
+    --keep-alive 2 \
     "src.app:create_app()"
 
-Restart=always
+# Restart policy
+Restart=on-failure
 RestartSec=5
+StartLimitInterval=60s
+StartLimitBurst=3
 
 # Security hardening
-NoNewPrivileges=yes
-PrivateTmp=yes
+NoNewPrivileges=true
+PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=/opt/epmpulse/data /opt/epmpulse/logs /var/log/epmpulse
+ProtectHome=true
+ReadWritePaths=/opt/epmpulse/data /var/log/epmpulse
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-### Setup Commands
+### 4.2 Enable and Start Service
 
 ```bash
-# Create user (no shell access)
-sudo useradd -r -s /bin/false epmpulse
-
-# Create directories
-sudo mkdir -p /opt/epmpulse /var/log/epmpulse
-
-# Set ownership
-sudo chown -R epmpulse:epmpulse /opt/epmpulse /var/log/epmpulse
-
-# Copy application files
-sudo cp -r /path/to/epmpulse/* /opt/epmpulse/
-sudo chown -R epmpulse:epmpulse /opt/epmpulse
-
-# Set permissions
-sudo chmod 750 /opt/epmpulse
-sudo chmod 600 /opt/epmpulse/.env
-sudo chmod -R 755 /opt/epmpulse/venv
-
 # Reload systemd
 sudo systemctl daemon-reload
 
-# Enable and start service
+# Enable service at boot
 sudo systemctl enable epmpulse
+
+# Start service
 sudo systemctl start epmpulse
 
 # Check status
 sudo systemctl status epmpulse
+
+# View logs
+sudo journalctl -u epmpulse -f
 ```
 
-### Service Management
+### 4.3 Service Commands Reference
 
 ```bash
 # Start/stop/restart
@@ -268,14 +568,35 @@ sudo systemctl start epmpulse
 sudo systemctl stop epmpulse
 sudo systemctl restart epmpulse
 
+# Check status
+sudo systemctl status epmpulse
+sudo systemctl is-active epmpulse
+
 # View logs
-sudo journalctl -u epmpulse -f
-sudo tail -f /var/log/epmpulse/error.log
+sudo journalctl -u epmpulse
+sudo journalctl -u epmpulse --since "1 hour ago"
+sudo journalctl -u epmpulse -f  # Follow
+
+# Reload after config changes
+sudo systemctl reload epmpulse
 ```
 
 ---
 
 ## 5. Nginx Reverse Proxy
+
+### 5.1 Install Nginx
+
+```bash
+sudo apt-get update
+sudo apt-get install -y nginx
+
+# Enable and start
+sudo systemctl enable nginx
+sudo systemctl start nginx
+```
+
+### 5.2 Create Nginx Configuration
 
 Create `/etc/nginx/sites-available/epmpulse`:
 
@@ -285,203 +606,232 @@ upstream epmpulse {
     keepalive 32;
 }
 
+# Rate limiting zone
+limit_req_zone $binary_remote_addr zone=api_limit:10m rate=60r/m;
+
+server {
+    listen 80;
+    server_name epmpulse.yourdomain.com;
+    
+    # Redirect to HTTPS
+    return 301 https://$server_name$request_uri;
+}
+
 server {
     listen 443 ssl http2;
     server_name epmpulse.yourdomain.com;
 
     # SSL certificates (from Let's Encrypt)
-    ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
-
+    ssl_certificate /etc/letsencrypt/live/epmpulse.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/epmpulse.yourdomain.com/privkey.pem;
+    
     # SSL configuration
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_prefer_server_ciphers on;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
+    ssl_stapling on;
+    ssl_stapling_verify on;
 
     # Security headers
+    add_header Strict-Transport-Security "max-age=63072000" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
     # Logs
-    access_log /var/log/nginx/epmpulse-access.log;
-    error_log /var/log/nginx/epmpulse-error.log;
+    access_log /var/log/nginx/epmpulse_access.log;
+    error_log /var/log/nginx/epmpulse_error.log;
 
-    location / {
+    # API endpoints with rate limiting
+    location /api/ {
+        limit_req zone=api_limit burst=20 nodelay;
+        limit_req_status 429;
+        
         proxy_pass http://epmpulse;
         proxy_http_version 1.1;
+        proxy_set_header Connection "";
         
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         
+        # Timeouts
         proxy_connect_timeout 30s;
         proxy_send_timeout 30s;
         proxy_read_timeout 30s;
         
+        # Buffer settings
         proxy_buffering off;
+        proxy_request_buffering off;
+        
+        # Max body size (16KB for status updates)
+        client_max_body_size 16k;
     }
 
-    location /api/v1/health {
+    # Health check (no rate limiting)
+    location /health {
         proxy_pass http://epmpulse;
-        access_log off;  # Don't log health checks
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
-}
 
-# Redirect HTTP to HTTPS
-server {
-    listen 80;
-    server_name epmpulse.yourdomain.com;
-    return 301 https://$server_name$request_uri;
+    # Deny access to hidden files
+    location ~ /\. {
+        deny all;
+    }
 }
 ```
 
-Enable site:
+### 5.3 Enable Site
 
 ```bash
+# Enable site
 sudo ln -s /etc/nginx/sites-available/epmpulse /etc/nginx/sites-enabled/
+
+# Remove default site
+sudo rm /etc/nginx/sites-enabled/default
+
+# Test configuration
 sudo nginx -t
+
+# Reload Nginx
 sudo systemctl reload nginx
 ```
 
 ---
 
-## 6. SSL Certificate
+## 6. SSL Certificate (Let's Encrypt)
 
-### Using Let's Encrypt (Certbot)
+### 6.1 Install Certbot
 
 ```bash
-# Install certbot
-sudo apt update
-sudo apt install certbot python3-certbot-nginx
+# Install Certbot
+sudo apt-get update
+sudo apt-get install -y certbot python3-certbot-nginx
 
-# Obtain certificate
-sudo certbot --nginx -d epmpulse.yourdomain.com
-
-# Auto-renewal is enabled by default
-# Test renewal
-sudo certbot renew --dry-run
+# Or via snap (recommended)
+sudo snap install core
+sudo snap refresh core
+sudo snap install --classic certbot
+sudo ln -s /snap/bin/certbot /usr/bin/certbot
 ```
 
-### Using Custom Certificate
+### 6.2 Obtain Certificate
 
 ```bash
-# Place certificates
-sudo cp your_certificate.crt /etc/ssl/certs/epmpulse.crt
-sudo cp your_private.key /etc/ssl/private/epmpulse.key
+# Option 1: Automatic Nginx configuration
+sudo certbot --nginx -d epmpulse.yourdomain.com
 
-# Update nginx config with paths
-ssl_certificate /etc/ssl/certs/epmpulse.crt;
-ssl_certificate_key /etc/ssl/private/epmpulse.key;
+# Option 2: Manual with standalone (if Nginx not running)
+sudo certbot certonly --standalone -d epmpulse.yourdomain.com
+
+# Follow prompts:
+# - Enter email
+# - Accept terms
+# - Choose whether to share email
+# - Select redirect (recommended)
+```
+
+### 6.3 Auto-Renewal
+
+```bash
+# Test renewal
+sudo certbot renew --dry-run
+
+# Certbot installs a systemd timer automatically
+# Verify it's active
+sudo systemctl list-timers | grep certbot
+
+# Manual renewal (if needed)
+sudo certbot renew
+
+# Force renewal
+sudo certbot renew --force-renewal
+```
+
+### 6.4 Certificate Paths
+
+After issuance, certificates are located at:
+
+```
+/etc/letsencrypt/live/epmpulse.yourdomain.com/
+├── cert.pem          # Server certificate
+├── chain.pem         # Intermediate certificates
+├── fullchain.pem     # cert.pem + chain.pem
+└── privkey.pem       # Private key
 ```
 
 ---
 
 ## 7. Configuration
 
-### 7.1 Get Slack Channel IDs
+### 7.1 Finding Slack Channel IDs
+
+1. Open Slack in web browser
+2. Navigate to the channel
+3. Look at the URL: `https://yourworkspace.slack.com/archives/C0123456789`
+4. Channel ID is the part after `/archives/` (e.g., `C0123456789`)
+
+**Alternative method:**
 
 ```bash
 # Using Slack API
-curl -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-     "https://slack.com/api/conversations.list" | jq '.channels[] | {name: .name, id: .id}'
-```
-
-Or use Slack web app:
-1. Open channel in browser
-2. URL shows: `.../archives/C0123456789`
-3. Channel ID is `C0123456789`
-
-### 7.2 Get Canvas IDs
-
-Create canvas first, then get ID:
-
-```bash
-# Create canvas
-curl -X POST \
+export SLACK_BOT_TOKEN="xoxb-your-token"
+curl -s https://slack.com/api/conversations.list \
   -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "channel_id": "C0123456789",
-    "title": "EPM Job Status Dashboard"
-  }' \
-  https://slack.com/api/canvases.create
+  -H "Content-Type: application/json" | \
+  jq '.channels[] | {name: .name, id: .id}'
 ```
 
-Or:
-1. Create canvas manually in Slack
-2. Open canvas
-3. URL shows: `.../canvas/F0123456789`
-4. Canvas ID is `F0123456789`
+### 7.2 Finding Canvas IDs
 
-### 7.3 Get EPM OAuth Credentials
+1. Open the Canvas in Slack
+2. Click the three dots menu (⋯) → "Copy link"
+3. Link format: `https://yourworkspace.slack.com/docs/F0123456789`
+4. Canvas ID is the part after `/docs/` (e.g., `F0123456789`)
 
-1. **Login to OCI Console**
-   - Navigate to Identity & Security → OAuth
+### 7.3 Getting EPM OAuth Credentials
+
+1. **Login to Oracle Cloud Console**
+   - Navigate to Identity & Security → Identity → Applications
 
 2. **Create Confidential Application**
-   - Name: EPMPulse Integration
-   - Allowed Grant Types: Client Credentials
-   - Grant the client access to: EPM Cloud Service
+   - Name: `EPMPulse Integration`
+   - Type: `Confidential Application`
 
-3. **Get Credentials**
-   - Client ID and Secret shown once
-   - Token URL format: `https://idcs-xxx.identity.oraclecloud.com/oauth2/v1/token`
+3. **Configure OAuth**
+   - Grant type: `Client Credentials`
+   - Scope: Add `urn:opc:epm`
 
-4. **Test Token**
-   ```bash
-   curl -X POST \
-     -u "CLIENT_ID:CLIENT_SECRET" \
-     -d "grant_type=client_credentials&scope=urn:opc:epm" \
-     "https://idcs-xxx.identity.oraclecloud.com/oauth2/v1/token"
-   ```
+4. **Save credentials:**
+   - Client ID (displayed after creation)
+   - Client Secret (shown once - save immediately)
 
-### 7.4 Update config/apps.json
+5. **Get Token URL:**
+   - Navigate to Identity → Domain
+   - Find Token Endpoint (format: `https://idcs-xxx.identity.oraclecloud.com/oauth2/v1/token`)
 
-```bash
-# Edit configuration
-sudo nano /opt/epmpulse/config/apps.json
-```
+### 7.4 Creating Slack App
 
-Replace placeholders with actual values:
-
-```json
-{
-  "epm": {
-    "auth": {
-      "type": "oauth",
-      "token_url": "${EPM_TOKEN_URL}",
-      "client_id": "${EPM_CLIENT_ID}",
-      "client_secret": "${EPM_CLIENT_SECRET}",
-      "scope": "urn:opc:epm"
-    },
-    "servers": {
-      "planning": {
-        "name": "Planning",
-        "base_url": "https://planning-epm.fa.us2.oraclecloud.com"
-      }
-    }
-  },
-  "apps": {
-    "Planning": {
-      "display_name": "Planning",
-      "domains": ["Actual", "Budget"],
-      "server": "planning",
-      "channels": ["C0123456789"]
-    }
-  },
-  "channels": {
-    "C0123456789": {
-      "name": "epm-main",
-      "canvas_id": "F0123456789"
-    }
-  }
-}
-```
+1. Go to https://api.slack.com/apps
+2. Click "Create New App" → "From scratch"
+3. Name it `EPMPulse`
+4. Navigate to **OAuth & Permissions**
+5. Add scopes:
+   - `canvas:write`
+   - `canvas:read`
+   - `chat:write`
+   - `channels:read`
+6. Install to workspace
+7. Copy **Bot User OAuth Token** (starts with `xoxb-`)
 
 ---
 
@@ -490,253 +840,426 @@ Replace placeholders with actual values:
 ### 8.1 Health Check
 
 ```bash
-# Local
-curl -H "X-API-Key: $EPMPULSE_API_KEY" \
-     http://localhost:18800/api/v1/health
+# Local health check
+curl http://localhost:18800/health
 
-# Via Nginx
-curl -H "X-API-Key: $EPMPULSE_API_KEY" \
-     https://epmpulse.yourdomain.com/api/v1/health
+# Expected response:
+# {"status": "healthy"}
+
+# Via Nginx/HTTPS
+curl https://epmpulse.yourdomain.com/health
 ```
 
-Expected response:
-```json
-{
-  "status": "healthy",
-  "checks": {
-    "state_file": "ok",
-    "slack_api": "connected"
-  }
-}
-```
-
-### 8.2 Test Status Update
+### 8.2 API Test Calls
 
 ```bash
-curl -X POST \
+# Set your API key
+export API_KEY="your_api_key_here"
+export BASE_URL="https://epmpulse.yourdomain.com"
+
+# Test status update
+curl -X POST "$BASE_URL/api/v1/status" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: $EPMPULSE_API_KEY" \
+  -H "Authorization: Bearer $API_KEY" \
   -d '{
     "app": "Planning",
     "domain": "Actual",
     "status": "Loading",
     "job_id": "TEST_001"
-  }' \
-  https://epmpulse.yourdomain.com/api/v1/status
+  }'
+
+# Test batch update
+curl -X POST "$BASE_URL/api/v1/status/batch" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
+  -d '{
+    "updates": [
+      {"app": "Planning", "domain": "Actual", "status": "OK"},
+      {"app": "FCCS", "domain": "Consolidation", "status": "Warning"}
+    ]
+  }'
+
+# Test get all statuses
+curl "$BASE_URL/api/v1/status" \
+  -H "Authorization: Bearer $API_KEY"
+
+# Test canvas sync
+curl -X POST "$BASE_URL/api/v1/canvas/sync" \
+  -H "Authorization: Bearer $API_KEY"
 ```
 
-### 8.3 Verify Slack Update
+### 8.3 Automated Test Script
 
-Check Slack canvas updates within 2-5 seconds.
+Create `/opt/epmpulse/scripts/test_deployment.sh`:
+
+```bash
+#!/bin/bash
+# Deployment test script
+
+set -e
+
+API_KEY="${EPMPULSE_API_KEY:?Set EPMPULSE_API_KEY}"
+BASE_URL="${EPMPULSE_URL:-https://epmpulse.yourdomain.com}"
+
+echo "Testing EPMPulse deployment..."
+echo "URL: $BASE_URL"
+
+# Health check
+echo -n "Health check... "
+response=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/health")
+if [ "$response" = "200" ]; then
+    echo "OK"
+else
+    echo "FAILED (HTTP $response)"
+    exit 1
+fi
+
+# API authentication test
+echo -n "API authentication... "
+response=$(curl -s -o /dev/null -w "%{http_code}" \
+  -H "Authorization: Bearer $API_KEY" \
+  "$BASE_URL/api/v1/status")
+if [ "$response" = "200" ]; then
+    echo "OK"
+else
+    echo "FAILED (HTTP $response)"
+    exit 1
+fi
+
+# Test status update
+echo -n "Status update... "
+response=$(curl -s -X POST "$BASE_URL/api/v1/status" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
+  -d '{"app":"Planning","domain":"Actual","status":"Loading","job_id":"TEST"}' \
+  -w "%{http_code}")
+if [ "$response" = "200" ]; then
+    echo "OK"
+else
+    echo "FAILED (HTTP $response)"
+    exit 1
+fi
+
+echo ""
+echo "All tests passed!"
+```
+
+```bash
+# Run tests
+chmod +x /opt/epmpulse/scripts/test_deployment.sh
+sudo -u epmpulse /opt/epmpulse/scripts/test_deployment.sh
+```
 
 ---
 
 ## 9. Backup Strategy
 
-### 9.1 Backup Script
+### 9.1 Daily Backup Script
 
-Create `/opt/epmpulse/backup.sh`:
+Create `/opt/epmpulse/scripts/backup.sh`:
 
 ```bash
 #!/bin/bash
-# EPMPulse Backup Script
+# EPMPulse daily backup script
 
-BACKUP_DIR="/backup/epmpulse"
+set -e
+
+# Configuration
+BACKUP_DIR="/opt/epmpulse/data/backups"
 DATA_DIR="/opt/epmpulse/data"
 CONFIG_DIR="/opt/epmpulse/config"
-DATE=$(date +%Y%m%d_%H%M%S)
 RETENTION_DAYS=30
+DATE=$(date +%Y%m%d_%H%M%S)
+BACKUP_NAME="epmpulse_backup_${DATE}"
 
 # Create backup directory
 mkdir -p "$BACKUP_DIR"
 
-# Create backup
-tar czf "$BACKUP_DIR/epmpulse-$DATE.tar.gz" \
-    -C /opt/epmpulse \
-    data config .env
+# Create temporary directory
+TEMP_DIR=$(mktemp -d)
+trap "rm -rf $TEMP_DIR" EXIT
 
-# Remove old backups
-find "$BACKUP_DIR" -name "epmpulse-*.tar.gz" -mtime +$RETENTION_DAYS -delete
+# Backup data files
+if [ -d "$DATA_DIR" ]; then
+    cp -r "$DATA_DIR" "$TEMP_DIR/"
+fi
 
-# Log
-echo "[$(date)] Backup completed: epmpulse-$DATE.tar.gz" >> "$BACKUP_DIR/backup.log"
+# Backup configuration
+if [ -d "$CONFIG_DIR" ]; then
+    cp -r "$CONFIG_DIR" "$TEMP_DIR/"
+fi
+
+# Backup environment file (sans secrets)
+grep -v "SECRET\|KEY\|TOKEN" /opt/epmpulse/.env > "$TEMP_DIR/env.example" 2>/dev/null || true
+
+# Create compressed archive
+tar -czf "$BACKUP_DIR/${BACKUP_NAME}.tar.gz" -C "$TEMP_DIR" .
+
+# Set permissions
+chown epmpulse:epmpulse "$BACKUP_DIR/${BACKUP_NAME}.tar.gz"
+chmod 640 "$BACKUP_DIR/${BACKUP_NAME}.tar.gz"
+
+# Clean old backups
+find "$BACKUP_DIR" -name "epmpulse_backup_*.tar.gz" -mtime +$RETENTION_DAYS -delete
+
+# Log backup
+echo "[$(date)] Backup created: ${BACKUP_NAME}.tar.gz" >> /var/log/epmpulse/backup.log
+
+# Optional: Upload to S3 (uncomment and configure)
+# aws s3 cp "$BACKUP_DIR/${BACKUP_NAME}.tar.gz" s3://your-bucket/epmpulse-backups/
 ```
 
-Make executable:
-```bash
-chmod +x /opt/epmpulse/backup.sh
-```
+### 9.2 Restore Script
 
-### 9.2 Automated Backups
-
-Add to crontab:
+Create `/opt/epmpulse/scripts/restore.sh`:
 
 ```bash
-# Daily backup at 2 AM
-0 2 * * * /opt/epmpulse/backup.sh
+#!/bin/bash
+# EPMPulse restore script
 
-# Weekly backup to remote (if configured)
-0 3 * * 0 /opt/epmpulse/backup.sh && rsync -avz /backup/epmpulse/ remote:/backups/
-```
+if [ -z "$1" ]; then
+    echo "Usage: $0 <backup_file>"
+    exit 1
+fi
 
-### 9.3 Restore from Backup
+BACKUP_FILE="$1"
 
-```bash
+if [ ! -f "$BACKUP_FILE" ]; then
+    echo "Backup file not found: $BACKUP_FILE"
+    exit 1
+fi
+
 # Stop service
 sudo systemctl stop epmpulse
 
-# Restore
-cd /opt/epmpulse
-sudo tar xzf /backup/epmpulse/epmpulse-20260216_020001.tar.gz
+# Create restore timestamp
+DATE=$(date +%Y%m%d_%H%M%S)
 
-# Fix permissions
-sudo chown -R epmpulse:epmpulse data config .env
+# Backup current state before restore
+sudo tar -czf "/opt/epmpulse/data/backups/pre_restore_${DATE}.tar.gz" -C /opt/epmpulse data config 2>/dev/null || true
+
+# Extract backup
+TEMP_DIR=$(mktemp -d)
+sudo tar -xzf "$BACKUP_FILE" -C "$TEMP_DIR"
+
+# Restore files
+sudo cp -r "$TEMP_DIR/data"/* /opt/epmpulse/data/ 2>/dev/null || true
+sudo cp -r "$TEMP_DIR/config"/* /opt/epmpulse/config/ 2>/dev/null || true
+
+# Set permissions
+sudo chown -R epmpulse:epmpulse /opt/epmpulse
+
+# Cleanup
+rm -rf "$TEMP_DIR"
 
 # Start service
 sudo systemctl start epmpulse
+
+echo "Restore completed from: $BACKUP_FILE"
+echo "Previous state saved to: /opt/epmpulse/data/backups/pre_restore_${DATE}.tar.gz"
+```
+
+### 9.3 Cron Scheduled Backups
+
+```bash
+# Edit crontab
+sudo crontab -e
+
+# Add daily backup at 2 AM
+0 2 * * * /opt/epmpulse/scripts/backup.sh >> /var/log/epmpulse/backup_cron.log 2>&1
+```
+
+### 9.4 Backup Verification
+
+```bash
+# List backups
+ls -la /opt/epmpulse/data/backups/
+
+# Test backup integrity
+tar -tzf /opt/epmpulse/data/backups/epmpulse_backup_YYYYMMDD_HHMMSS.tar.gz
+
+# Check backup log
+tail /var/log/epmpulse/backup.log
 ```
 
 ---
 
 ## 10. Monitoring
 
-### 10.1 Health Monitoring
+### 10.1 Log Monitoring
 
 ```bash
-# Add to monitoring system (e.g., UptimeRobot, Pingdom)
-curl -f -H "X-API-Key: $EPMPULSE_API_KEY" \
-     https://epmpulse.yourdomain.com/api/v1/health || alert
+# Journal logs
+sudo journalctl -u epmpulse -f
+
+# Application logs
+sudo tail -f /var/log/epmpulse/epmpulse.log
+
+# Nginx logs
+sudo tail -f /var/log/nginx/epmpulse_access.log
+sudo tail -f /var/log/nginx/epmpulse_error.log
 ```
 
-### 10.2 Log Monitoring
+### 10.2 Health Check Endpoint
 
 ```bash
-# Real-time error monitoring
-sudo journalctl -u epmpulse -f | grep -i error
+# Create health check script
+cat > /opt/epmpulse/scripts/healthcheck.sh << 'EOF'
+#!/bin/bash
+URL="https://epmpulse.yourdomain.com/health"
+TIMEOUT=5
 
-# Check recent errors
-sudo journalctl -u epmpulse --since "1 hour ago" | grep -i error
+response=$(curl -s -o /dev/null -w "%{http_code}" --max-time $TIMEOUT "$URL")
 
-# Access log analysis
-sudo awk '{print $1}' /var/log/nginx/epmpulse-access.log | sort | uniq -c | sort -rn | head -10
+if [ "$response" = "200" ]; then
+    echo "HEALTHY"
+    exit 0
+else
+    echo "UNHEALTHY (HTTP $response)"
+    exit 1
+fi
+EOF
+
+chmod +x /opt/epmpulse/scripts/healthcheck.sh
 ```
 
-### 10.3 Disk Space
+### 10.3 Prometheus Metrics (Optional)
+
+Add to requirements.txt if using Prometheus:
+```
+prometheus-flask-exporter
+```
+
+Configure metrics endpoint in `src/app.py`:
+```python
+from prometheus_flask_exporter import PrometheusMetrics
+
+metrics = PrometheusMetrics(app)
+```
+
+Metrics available at `/metrics`.
+
+### 10.4 Alerting Setup (Uptime Kuma Example)
 
 ```bash
-# Check state file size
-du -h /opt/epmpulse/data/apps_status.json
+# Install Uptime Kuma (Docker)
+docker run -d \
+  --restart=always \
+  -p 3001:3001 \
+  -v uptime-kuma:/app/data \
+  --name uptime-kuma \
+  louislam/uptime-kuma:1
 
-# Monitor data directory
-watch -n 60 'du -sh /opt/epmpulse/data'
-```
-
-### 10.4 Prometheus Metrics (Optional)
-
-If metrics endpoint implemented:
-
-```yaml
-# prometheus.yml
-scrape_configs:
-  - job_name: 'epmpulse'
-    static_configs:
-      - targets: ['localhost:18800']
-    metrics_path: '/api/v1/metrics'
+# Configure monitor:
+# - Type: HTTP(s)
+# - URL: https://epmpulse.yourdomain.com/health
+# - Method: GET
+# - Expected status: 200
+# - Interval: 60s
 ```
 
 ---
 
 ## 11. Troubleshooting
 
-### Common Issues
+### 11.1 Service Won't Start
 
-#### Service Won't Start
-
-**Check logs:**
 ```bash
+# Check logs
 sudo journalctl -u epmpulse -n 50
-sudo cat /var/log/epmpulse/error.log
+
+# Validate configuration
+sudo -u epmpulse bash -c "cd /opt/epmpulse && source venv/bin/activate && python -c 'from src.config import Config; c = Config.from_env(); print(c.validate())'"
+
+# Check file permissions
+ls -la /opt/epmpulse/
+ls -la /opt/epmpulse/data/
+sudo -u epmpulse touch /opt/epmpulse/data/test  # Should succeed
 ```
 
 **Common causes:**
-- Missing `.env` file
-- Port 18800 already in use: `sudo ss -tlnp | grep 18800`
-- Permission issues: `sudo chown -R epmpulse:epmpulse /opt/epmpulse`
+- Missing environment variables
+- Incorrect permissions on data directory
+- Canvas ID contains placeholder
+- Port already in use
 
-**Fix:**
+### 11.2 Canvas Not Updating
+
 ```bash
-# Check port usage
-sudo lsof -i :18800
+# Check Slack token scopes
+curl -s https://slack.com/api/auth.test \
+  -H "Authorization: Bearer $SLACK_BOT_TOKEN"
 
-# Kill process if needed
-sudo kill -9 <PID>
+# Verify canvas permissions
+curl -s "https://slack.com/api/canvases.access.delete" \
+  -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"canvas_id\":\"$SLACK_MAIN_CANVAS_ID\"}"
+
+# Check canvas exists
+curl -s "https://slack.com/api/canvases.info?canvas_id=$SLACK_MAIN_CANVAS_ID" \
+  -H "Authorization: Bearer $SLACK_BOT_TOKEN"
 ```
-
-#### Canvas Not Updating
-
-**Checklist:**
-1. Verify `SLACK_BOT_TOKEN` has `canvas:write` scope
-2. Verify canvas ID format (starts with `F`)
-3. Check Slack app is added to target channel
-4. Review logs for Slack API errors
-5. Verify API key is correct
-
-**Test Slack connection:**
-```bash
-curl -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-     https://slack.com/api/auth.test
-```
-
-#### EPM Connection Fails
-
-**Test OAuth token:**
-```bash
-curl -X POST \
-  -u "$EPM_CLIENT_ID:$EPM_CLIENT_SECRET" \
-  -d "grant_type=client_credentials&scope=urn:opc:epm" \
-  "$EPM_TOKEN_URL"
-```
-
-**Verify service account:**
-- Check OCI Identity Console
-- Ensure EPM Cloud Service access granted
-- Verify token URL matches your OCI region
-
-#### High Memory Usage
-
-**Symptoms:** Out of memory errors, service killed
 
 **Solutions:**
-1. Reduce Gunicorn workers: `-w 2` instead of `-w 4`
-2. Check state file size: `du -h data/apps_status.json`
-3. Enable log rotation
-4. Add swap space if needed
+- Reinstall Slack app with required scopes
+- Verify canvas ID is correct
+- Check bot is member of channel
 
-**Monitor memory:**
+### 11.3 API Key Authentication Failing
+
 ```bash
-sudo systemctl status epmpulse | grep Memory
+# Test API key
+curl -v "$BASE_URL/api/v1/status" \
+  -H "Authorization: Bearer $API_KEY"
+
+# Check for trailing whitespace
+echo "$EPMPULSE_API_KEY" | od -c | tail -3
 ```
 
-#### 403 Forbidden Errors
+**Solutions:**
+- Regenerate API key: `openssl rand -hex 32`
+- Update `.env` and restart service
+- Check for invisible characters in key
 
-**Check API key:**
+### 11.4 High Memory Usage
+
 ```bash
-# Verify key matches
-grep EPMPULSE_API_KEY .env
+# Check memory usage
+sudo systemctl status epmpulse
+ps aux | grep gunicorn
+
+# Reduce workers in service file
+# Change: -w 4 → -w 2
+sudo systemctl edit epmpulse
+sudo systemctl restart epmpulse
 ```
 
-**Check nginx config:**
-- Ensure `X-API-Key` header is passed through
-- Verify no conflicting auth
+### 11.5 Database Lock Errors
 
-#### Slack Rate Limiting
+```bash
+# Remove stale lock files
+sudo -u epmpulse rm -f /opt/epmpulse/data/*.lock
 
-**Symptoms:** `rate_limited` errors in logs
+# Check for zombie processes
+sudo lsof /opt/epmpulse/data/apps_status.lock
 
-**Solution:**
-- EPMPulse has built-in debouncing (2s minimum)
-- If still hitting limits, increase `min_update_interval`
-- Check Slack API usage dashboard
+# Restart service
+sudo systemctl restart epmpulse
+```
+
+### 11.6 SSL Certificate Issues
+
+```bash
+# Test certificate
+openssl s_client -connect epmpulse.yourdomain.com:443 -servername epmpulse.yourdomain.com
+
+# Check expiration
+echo | openssl s_client -servername epmpulse.yourdomain.com -connect epmpulse.yourdomain.com:443 2>/dev/null | openssl x509 -noout -dates
+
+# Force renew
+sudo certbot renew --force-renewal
+```
 
 ---
 
@@ -745,157 +1268,141 @@ grep EPMPULSE_API_KEY .env
 ### 12.1 File Permissions
 
 ```bash
-# Application files
-sudo chmod 750 /opt/epmpulse
-sudo chmod 600 /opt/epmpulse/.env
-sudo chmod 644 /opt/epmpulse/config/apps.json
+# Set secure permissions on .env
+sudo chmod 640 /opt/epmpulse/.env
+sudo chown epmpulse:epmpulse /opt/epmpulse/.env
+
+# Protect data directory
 sudo chmod 750 /opt/epmpulse/data
-sudo chmod 600 /opt/epmpulse/data/*
+sudo chown -R epmpulse:epmpulse /opt/epmpulse/data
 
-# Log files
+# Protect config
+sudo chmod 750 /opt/epmpulse/config
+sudo chmod 640 /opt/epmpulse/config/*.json
+
+# Secure logs
 sudo chmod 755 /var/log/epmpulse
-sudo chmod 644 /var/log/epmpulse/*.log
+sudo chown epmpulse:adm /var/log/epmpulse
 ```
 
-### 12.2 Firewall (UFW)
+### 12.2 Firewall Configuration
 
 ```bash
-# Allow SSH (don't lock yourself out!)
+# UFW rules
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
 sudo ufw allow ssh
+sudo ufw allow 'Nginx Full'
 
-# Allow HTTP/HTTPS
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
+# IP-based restrictions (optional)
+# Allow only specific IPs to API
+# sudo ufw allow from 192.168.1.0/24 to any port 443
 
-# Deny direct access to EPMPulse
-sudo ufw deny 18800/tcp
-
-# Enable firewall
-sudo ufw enable
+sudo ufw --force enable
 ```
 
-Verify:
-```bash
-sudo ufw status
-```
-
-Expected output:
-```
-To                         Action      From
---                         ------      ----
-SSH                        ALLOW       Anywhere
-80/tcp                     ALLOW       Anywhere
-443/tcp                    ALLOW       Anywhere
-18800/tcp                  DENY        Anywhere
-```
-
-### 12.3 API Key Rotation
-
-**Generate new key:**
-```bash
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-**Update service:**
-```bash
-# Edit .env
-sudo nano /opt/epmpulse/.env
-
-# Restart service
-sudo systemctl restart epmpulse
-```
-
-**Update integrations:**
-- Update Groovy templates
-- Update ODI Python scripts
-- Update monitoring checks
-
-### 12.4 Fail2Ban (Optional)
+### 12.3 Fail2ban Integration
 
 ```bash
-# Install
-sudo apt install fail2ban
+# Install fail2ban
+sudo apt-get install -y fail2ban
 
-# Create config
-sudo tee /etc/fail2ban/jail.local << 'EOF'
-[DEFAULT]
-bantime = 1h
-findtime = 10m
-maxretry = 5
+# Create filter
+cat > /etc/fail2ban/filter.d/epmpulse.conf << 'EOF'
+[Definition]
+failregex = ^.*"POST /api/v1/status.*" 401.*$
+            ^.*"GET /api/v1/status.*" 401.*$
+ignoreregex =
+EOF
 
+# Create jail
+cat > /etc/fail2ban/jail.d/epmpulse.conf << 'EOF'
 [epmpulse]
 enabled = true
 port = http,https
 filter = epmpulse
-logpath = /var/log/nginx/epmpulse-error.log
-maxretry = 3
-bantime = 1h
+logpath = /var/log/nginx/epmpulse_access.log
+maxretry = 5
+bantime = 3600
+findtime = 600
 EOF
 
-# Create filter
-sudo tee /etc/fail2ban/filter.d/epmpulse.conf << 'EOF'
-[Definition]
-failregex = ^.*401.*client <HOST>.*$
-            ^.*403.*client <HOST>.*$
-ignoreregex =
-EOF
-
-# Restart
+# Restart fail2ban
 sudo systemctl restart fail2ban
+```
+
+### 12.4 API Key Rotation
+
+```bash
+#!/bin/bash
+# Rotate API key
+
+# Generate new key
+NEW_KEY=$(openssl rand -hex 32)
+echo "New API key: $NEW_KEY"
+
+# Update .env
+sudo sed -i "s/^EPMPULSE_API_KEY=.*/EPMPULSE_API_KEY=\"$NEW_KEY\"/" /opt/epmpulse/.env
+
+# Reload service (graceful)
+sudo systemctl reload epmpulse
+
+# Old key is valid until all clients update
+echo "Update your EPM Groovy rules with the new key"
 ```
 
 ### 12.5 Security Checklist
 
-- [ ] API key changed from default
-- [ ] `.env` file has 600 permissions
-- [ ] Firewall blocks port 18800 from external
-- [ ] SSL certificate is valid
-- [ ] No secrets in logs
-- [ ] Automatic backups configured
-- [ ] Fail2Ban installed (optional)
-- [ ] Regular security updates: `sudo apt update && sudo apt upgrade`
+- [ ] API key generated with `openssl rand -hex 32` (minimum)
+- [ ] `.env` file has permissions 640
+- [ ] Service runs as non-root user (`epmpulse`)
+- [ ] Data directory is not world-readable
+- [ ] SSL certificate is valid and not expired
+- [ ] Firewall only allows ports 80, 443, 22
+- [ ] Fail2ban is installed and configured
+- [ ] Nginx version is hidden (`server_tokens off`)
+- [ ] Security headers are configured
+- [ ] Logs are rotated (logrotate configured)
+- [ ] Backups are encrypted (if offsite)
+- [ ] Slack token has minimum required scopes only
 
 ---
 
-## Quick Reference
+## Appendix: Quick Reference Commands
 
-### Service Commands
 ```bash
-sudo systemctl {start|stop|restart|status} epmpulse
-sudo journalctl -u epmpulse -f
-```
+# Status checks
+systemctl status epmpulse
+journalctl -u epmpulse -f
+docker-compose ps
 
-### Test Commands
-```bash
-# Health
-curl -H "X-API-Key: $KEY" https://epmpulse.yourdomain.com/api/v1/health
+# Restart
+systemctl restart epmpulse
+docker-compose restart
 
-# Update status
-curl -X POST -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-     -d '{"app":"Planning","domain":"Actual","status":"OK"}' \
-     https://epmpulse.yourdomain.com/api/v1/status
-```
+# Logs
+tail -f /var/log/epmpulse/epmpulse.log
+nginx -t && nginx -s reload
 
-### Backup & Restore
-```bash
-# Manual backup
-sudo /opt/epmpulse/backup.sh
+# Backup
+/opt/epmpulse/scripts/backup.sh
+ls -la /opt/epmpulse/data/backups/
 
-# Restore
-sudo systemctl stop epmpulse
-sudo tar xzf /backup/epmpulse/epmpulse-xxx.tar.gz -C /opt/epmpulse
-sudo chown -R epmpulse:epmpulse /opt/epmpulse
-sudo systemctl start epmpulse
+# Update
+cd /opt/epmpulse && git pull
+source venv/bin/activate && pip install -r requirements.txt
+systemctl restart epmpulse
 ```
 
 ---
 
 ## Support
 
-For issues not covered in this guide:
-1. Check logs: `sudo journalctl -u epmpulse -n 100`
-2. Review ARCHITECTURE.md for technical details
-3. Check CODE_REVIEW.md for known issues
-4. Open issue in GitHub repository
+For issues and questions:
+- Documentation: [GitHub Wiki](https://github.com/your-org/epm-dashboard)
+- Issues: [GitHub Issues](https://github.com/your-org/epm-dashboard/issues)
+- Slack: `#epm-support` channel
 
-**Version:** This guide reflects EPMPulse v1.0.0
+**Emergency contacts:**
+- Infrastructure: infrastructure@yourcompany.com
+- EPM Team: epm-team@yourcompany.com
