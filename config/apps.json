@@ -46,11 +46,11 @@
   "channels": {
     "C0123456789": {
       "name": "epm-main",
-      "canvas_id": "Fcanvas_main_placeholder"
+      "canvas_id": "${SLACK_MAIN_CANVAS_ID}"
     },
     "C9876543210": {
       "name": "arcs-support",
-      "canvas_id": "Fcanvas_arcs_placeholder"
+      "canvas_id": "${SLACK_ARCS_CANVAS_ID}"
     }
   },
   "settings": {

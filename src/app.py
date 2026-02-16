@@ -3,7 +3,7 @@
 from flask import Flask
 from typing import Optional
 
-from .config import get_api_key
+from .config import get_api_key, get_config
 from .api.routes import api_v1
 from .api.errors import register_error_handlers
 
@@ -16,6 +16,9 @@ def create_app(test_config: Optional[dict] = None) -> Flask:
         
     Returns:
         Configured Flask application
+        
+    Raises:
+        ValueError: If configuration validation fails (e.g., placeholder canvas IDs)
     """
     app = Flask(__name__, instance_relative_config=True)
     

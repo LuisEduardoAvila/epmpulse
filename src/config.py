@@ -37,16 +37,49 @@ def get_config() -> Dict[str, Any]:
     
     Returns:
         Configuration dictionary
+        
+    Raises:
+        ValueError: If canvas ID contains placeholder
     """
     config_file = Path(__file__).parent.parent / "config" / "apps.json"
     if config_file.exists():
         try:
             import json
             with open(config_file, 'r') as f:
-                return json.load(f)
+                config = json.load(f)
+            
+            # Validate canvas IDs don't contain placeholders
+            validate_canvas_ids(config)
+            
+            return config
         except Exception:
             pass
     return {}
+
+
+def validate_canvas_ids(config: Dict[str, Any]) -> None:
+    """Validate that canvas IDs don't contain placeholder values.
+    
+    Args:
+        config: Configuration dictionary
+        
+    Raises:
+        ValueError: If a canvas ID contains a placeholder
+    """
+    channels = config.get('channels', {})
+    for channel_id, channel_config in channels.items():
+        canvas_id = channel_config.get('canvas_id', '')
+        if 'placeholder' in canvas_id.lower():
+            raise ValueError(
+                f"Canvas ID for channel {channel_id} contains placeholder. "
+                f"Set {channel_config.get('canvas_env', 'SLACK_MAIN_CANVAS_ID')} environment variable."
+            )
+        # Also check for ${...} pattern that wasn't substituted
+        if canvas_id.startswith('${') and canvas_id.endswith('}'):
+            raise ValueError(
+                f"Canvas ID for channel {channel_id} is an unsubstituted template: {canvas_id}. "
+                f"Set the corresponding environment variable."
+            )
 
 
 def get_app_config(app_name: str) -> Optional[Dict[str, Any]]:

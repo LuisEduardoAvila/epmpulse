@@ -3,6 +3,7 @@
 from flask import Blueprint, jsonify, request
 from typing import Dict, Any, Optional
 from datetime import datetime
+from pydantic import ValidationError
 
 from ..config import get_config, get_api_key
 from ..state.manager import StateManager, StateError
@@ -110,6 +111,21 @@ def update_status():
         
         # Validate with Pydantic
         validated = StatusUpdateRequest(**data)
+    except ValidationError as e:
+        # Extract validation error messages
+        errors = e.errors()
+        for error in errors:
+            field = error.get('loc', [None])[0]
+            msg = error.get('msg', 'Invalid value')
+            
+            # Return specific error codes based on field
+            if field == 'app':
+                return error_response('INVALID_APP', f'Invalid app: {msg}')
+            elif field == 'status':
+                return error_response('INVALID_STATUS', f'Invalid status: {msg}')
+        
+        # Default to invalid request for other validation errors
+        return error_response('INVALID_REQUEST', f'Validation error: {str(errors)}')
     except Exception as e:
         return error_response('INVALID_REQUEST', str(e))
     
@@ -178,6 +194,18 @@ def batch_update_status():
         
         # Validate with Pydantic
         validated = BatchStatusUpdateRequest(**data)
+    except ValidationError as e:
+        # Extract validation error messages
+        errors = e.errors()
+        for error in errors:
+            field = error.get('loc', [None])[0]
+            msg = error.get('msg', 'Invalid value')
+            
+            # Return specific error codes based on field
+            if field == 'updates':
+                return error_response('INVALID_REQUEST', f'Invalid updates: {msg}')
+        
+        return error_response('INVALID_REQUEST', f'Validation error: {str(errors)}')
     except Exception as e:
         return error_response('INVALID_REQUEST', str(e))
     

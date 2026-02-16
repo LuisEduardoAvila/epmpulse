@@ -4,18 +4,24 @@ from flask import jsonify
 from typing import Dict, Any
 
 
-def error_response(code: str, message: str, details: Dict[str, Any] = None, status_code: int = 400) -> tuple:
+def error_response(code: str, message: str, details: Dict[str, Any] = None, status_code: int = None) -> tuple:
     """Create standard error response.
     
     Args:
         code: Error code (e.g., 'INVALID_STATUS')
         message: Human-readable error message
         details: Optional additional details
-        status_code: HTTP status code
+        status_code: HTTP status code (uses ERROR_CODES mapping if not provided)
         
     Returns:
         Tuple of (json response, status code)
     """
+    # Get status code from ERROR_CODES if not provided
+    if status_code is None and code in ERROR_CODES:
+        status_code = ERROR_CODES[code].get('status', 400)
+    elif status_code is None:
+        status_code = 400
+    
     response = {
         'success': False,
         'error': {
