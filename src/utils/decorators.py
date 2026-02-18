@@ -18,7 +18,7 @@ def require_api_key(f: Callable) -> Callable:
     Returns:
         Decorated function
     """
-    from .config import get_api_key
+    from ..config import get_api_key
     
     @wraps(f)
     def decorated(*args, **kwargs):

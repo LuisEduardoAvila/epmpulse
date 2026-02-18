@@ -2,9 +2,11 @@
 
 from flask import Flask
 from typing import Optional
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 from .config import get_api_key, get_config
-from .api.routes import api_v1
+from .api.routes import api_v1, set_limiter
 from .api.errors import register_error_handlers
 
 
@@ -35,6 +37,23 @@ def create_app(test_config: Optional[dict] = None) -> Flask:
     
     # Load config from file if exists
     app.config.from_pyfile('config.py', silent=True)
+    
+    # Initialize Flask-Limiter (disabled in testing mode unless explicitly enabled)
+    if not test_config or test_config.get('RATELIMIT_ENABLED', True):
+        storage_uri = test_config.get('RATELIMIT_STORAGE_URI', "memory://") if test_config else "memory://"
+        _limiter = Limiter(
+            app=app,
+            key_func=get_remote_address,
+            default_limits=["100 per minute"],  # Default: 100 reqs/min for all routes
+            storage_uri=storage_uri,
+            strategy="fixed-window",
+            headers_enabled=True,
+        )
+        # Pass limiter to routes module for specific decorators
+        set_limiter(_limiter)
+    else:
+        # Still set limiter to None so routes know it's disabled
+        set_limiter(None)
     
     # Register API-blueprint
     app.register_blueprint(api_v1)

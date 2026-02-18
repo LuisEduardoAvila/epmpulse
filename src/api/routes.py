@@ -1,19 +1,45 @@
 """Flask routes for EPMPulse API."""
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, current_app
 from typing import Dict, Any, Optional
 from datetime import datetime
 from pydantic import ValidationError
+from functools import wraps
 
-from ..config import get_config, get_api_key
+from ..config import get_config
 from ..state.manager import StateManager, StateError
 from ..slack.client import SlackClient
 from ..slack.canvas import CanvasManager
+from ..utils.decorators import require_api_key
 from .validators import StatusUpdateRequest, BatchStatusUpdateRequest
 from .errors import error_response, ERROR_CODES
 
 # Create API blueprint
 api_v1 = Blueprint('api_v1', __name__, url_prefix='/api/v1')
+
+
+# Global limiter reference (set by app factory)
+_limiter = None
+
+
+def set_limiter(limiter_instance):
+    """Set the global limiter instance from app factory."""
+    global _limiter
+    _limiter = limiter_instance
+
+
+def rate_limit(limit_string: str):
+    """Rate limit decorator that works with Flask-Limiter.
+    
+    Returns a proper Flask-Limiter limit decorator if limiter is initialized,
+    otherwise returns a no-op passthrough decorator.
+    """
+    def decorator(f):
+        if _limiter is not None:
+            return _limiter.limit(limit_string)(f)
+        return f
+    return decorator
+
 
 # Global state manager
 _state_manager = StateManager()
@@ -92,17 +118,10 @@ def health_check():
 
 
 @api_v1.route('/status', methods=['POST'])
+@require_api_key
+@rate_limit("60 per minute")
 def update_status():
     """Update a single app/domain status."""
-    # Validate API key
-    api_key = request.headers.get('Authorization', '')
-    if not api_key.startswith('Bearer '):
-        return error_response('MISSING_AUTH', 'Missing Authorization header')
-    
-    key = api_key[7:]
-    if key != get_api_key():
-        return error_response('INVALID_KEY', 'Invalid API key')
-    
     # Validate request
     try:
         data = request.get_json()
@@ -175,17 +194,10 @@ def update_status():
 
 
 @api_v1.route('/status/batch', methods=['POST'])
+@require_api_key
+@rate_limit("20 per minute")
 def batch_update_status():
     """Update multiple app/domain statuses."""
-    # Validate API key
-    api_key = request.headers.get('Authorization', '')
-    if not api_key.startswith('Bearer '):
-        return error_response('MISSING_AUTH', 'Missing Authorization header')
-    
-    key = api_key[7:]
-    if key != get_api_key():
-        return error_response('INVALID_KEY', 'Invalid API key')
-    
     # Validate request
     try:
         data = request.get_json()
@@ -251,17 +263,10 @@ def batch_update_status():
 
 
 @api_v1.route('/status', methods=['GET'])
+@require_api_key
+@rate_limit("100 per minute")
 def get_all_statuses():
     """Get all current statuses."""
-    # Validate API key
-    api_key = request.headers.get('Authorization', '')
-    if not api_key.startswith('Bearer '):
-        return error_response('MISSING_AUTH', 'Missing Authorization header')
-    
-    key = api_key[7:]
-    if key != get_api_key():
-        return error_response('INVALID_KEY', 'Invalid API key')
-    
     # Get state
     try:
         result = _state_manager.get_all()
@@ -274,17 +279,10 @@ def get_all_statuses():
 
 
 @api_v1.route('/status/<app_name>', methods=['GET'])
+@require_api_key
+@rate_limit("100 per minute")
 def get_app_status(app_name: str):
     """Get status for a specific app."""
-    # Validate API key
-    api_key = request.headers.get('Authorization', '')
-    if not api_key.startswith('Bearer '):
-        return error_response('MISSING_AUTH', 'Missing Authorization header')
-    
-    key = api_key[7:]
-    if key != get_api_key():
-        return error_response('INVALID_KEY', 'Invalid API key')
-    
     # Validate app name
     if app_name not in {'Planning', 'FCCS', 'ARCS'}:
         return error_response('INVALID_APP', 'App must be one of: Planning, FCCS, ARCS')
@@ -304,17 +302,10 @@ def get_app_status(app_name: str):
 
 
 @api_v1.route('/canvas/sync', methods=['POST'])
+@require_api_key
+@rate_limit("10 per minute")
 def sync_canvas():
     """Force canvas synchronization."""
-    # Validate API key
-    api_key = request.headers.get('Authorization', '')
-    if not api_key.startswith('Bearer '):
-        return error_response('MISSING_AUTH', 'Missing Authorization header')
-    
-    key = api_key[7:]
-    if key != get_api_key():
-        return error_response('INVALID_KEY', 'Invalid API key')
-    
     try:
         canvas_mgr = _get_canvas_manager()
         canvas_id = canvas_mgr.sync_canvas()

@@ -21,10 +21,11 @@ def build_header_block(app_name: str, display_name: str) -> Dict[str, Any]:
         display_name: Display name for the application
         
     Returns:
-        Header block dictionary
+        Header block dictionary with block_id for section updates
     """
     return {
         'type': 'section',
+        'block_id': f"{app_name.lower()}_header",
         'text': {
             'type': 'mrkdwn',
             'text': f'*▸ {display_name}*'
@@ -147,18 +148,52 @@ def build_domain_section(app_name: str, domain_name: str, domain_data: Dict[str,
         domain_data: Domain status data
         
     Returns:
-        Complete section block dictionary
+        Complete section block dictionary with block_id for section updates
     """
     status = domain_data.get('status', 'Blank')
     job_id = domain_data.get('job_id')
     updated = domain_data.get('updated')
     
-    return build_status_field_block(
+    block = build_status_field_block(
         domain_name=domain_name,
         status=status,
         job_id=job_id,
         updated=updated
     )
+    
+    # Add block_id for section-based updates
+    block['block_id'] = f"{app_name.lower()}_{domain_name.lower()}_section"
+    
+    return block
+
+
+def build_single_domain_blocks(
+    app_name: str,
+    display_name: str,
+    domain_name: str,
+    domain_data: Dict[str, Any]
+) -> list:
+    """Build blocks for a single domain update with proper block_ids.
+    
+    Args:
+        app_name: Application name
+        display_name: Display name for the app
+        domain_name: Domain name
+        domain_data: Domain status data
+        
+    Returns:
+        List of block dictionaries with block_ids for section updates
+    """
+    blocks = []
+    
+    # Header with block_id
+    blocks.append(build_header_block(app_name, display_name))
+    
+    # Single domain section with unique block_id
+    domain_block = build_domain_section(app_name, domain_name, domain_data)
+    blocks.append(domain_block)
+    
+    return blocks
 
 
 def build_app_block(
@@ -174,20 +209,21 @@ def build_app_block(
         domains: Dictionary of domain data
         
     Returns:
-        List of block dictionaries
+        List of block dictionaries with block_ids for section updates
     """
     blocks = []
     
-    # Header
+    # Header with block_id for section updates
     blocks.append(build_header_block(app_name, display_name))
     
-    # Status fields (2 per row)
+    # Status fields (2 per row) with unique block_ids
     domain_list = list(domains.items())
     for i in range(0, len(domain_list), 2):
         domain_pairs = domain_list[i:i+2]
         
         # Build fields list
         fields = []
+        block_id_parts = []
         for domain_name, domain_data in domain_pairs:
             status = domain_data.get('status', 'Blank')
             job_id = domain_data.get('job_id')
@@ -210,9 +246,17 @@ def build_app_block(
                 'type': 'mrkdwn',
                 'text': status_text
             })
+            
+            # Collect domain names for block_id
+            block_id_parts.append(domain_name.lower())
+        
+        # Create unique block_id for this section
+        domains_str = '_'.join(sorted(block_id_parts))
+        block_id = f"{app_name.lower()}_{domains_str}_section"
         
         blocks.append({
             'type': 'section',
+            'block_id': block_id,
             'fields': fields
         })
     

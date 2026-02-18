@@ -95,25 +95,40 @@ class SlackClient:
         self,
         canvas_id: str,
         section_id: str,
-        content: str
+        content: Optional[str] = None,
+        blocks: Optional[List[Dict[str, Any]]] = None
     ) -> bool:
         """Update a specific canvas section.
         
         Args:
             canvas_id: Canvas ID to update
             section_id: Section ID to update
-            content: New markdown content
+            content: New markdown content (optional)
+            blocks: Block kit blocks to update section with (optional)
             
         Returns:
             True if successful, False otherwise
         """
+        if not content and not blocks:
+            print("Canvas section update failed: must provide content or blocks")
+            return False
+        
         try:
-            self.client.canvases_section_update(
-                canvas_id=canvas_id,
-                section_id=section_id,
-                content=content
-            )
+            kwargs = {
+                'canvas_id': canvas_id,
+                'section_id': section_id,
+            }
+            if content:
+                kwargs['content'] = content
+            if blocks:
+                kwargs['blocks'] = blocks
+            
+            self.client.canvases_section_update(**kwargs)
             return True
+        except AttributeError:
+            # canvases_section_update not available in this SDK version
+            print("Warning: canvases_section_update not available in Slack SDK version")
+            return False
         except SlackApiError as e:
             print(f"Canvas section update failed: {e}")
             return False
